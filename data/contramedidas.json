@@ -1,0 +1,72 @@
+[
+  {
+    "id": "mt07hwfck0ns2",
+    "tipo": "Falla común",
+    "maquina": "B4",
+    "maquinaNombre": "NPK-250",
+    "referencia": "B4",
+    "categoria": "",
+    "descripcion": "se reparara sistema de carry. com",
+    "responsable": "PEDRO ENRIQUE ORTIZ",
+    "fechaLimite": "2026-08-05",
+    "estado": "Completado",
+    "creada": "2026-08-19T14:48:10.344Z",
+    "trabajoRealizado": "se cambia ensamble de la estrella superior del carry",
+    "fotos": [
+      "foto_mt07wegj_rr8.png"
+    ]
+  },
+  {
+    "id": "mt0bt0msbwvzx",
+    "tipo": "MTTR",
+    "maquina": "B10",
+    "maquinaNombre": "NPK-250",
+    "referencia": "B10",
+    "categoria": "",
+    "descripcion": "",
+    "responsable": "MARCELINO FIGUEROA GAMES",
+    "fechaLimite": "2026-08-24",
+    "estado": "Pendiente",
+    "creada": "2026-08-19T16:48:47.476Z"
+  },
+  {
+    "id": "mt0by2nyjl0jd",
+    "tipo": "MTTR",
+    "maquina": "C11",
+    "maquinaNombre": "CM-400",
+    "referencia": "C11",
+    "categoria": "",
+    "descripcion": "",
+    "responsable": "J. GUADALUPE ESPINOZA GARCIA",
+    "fechaLimite": "2026-08-25",
+    "estado": "Pendiente",
+    "creada": "2026-08-19T16:52:43.390Z"
+  },
+  {
+    "id": "mt0c8wbgfjroy",
+    "tipo": "Falla común",
+    "maquina": "P5",
+    "maquinaNombre": "Seiyi sn1-176",
+    "referencia": "P5",
+    "categoria": "",
+    "descripcion": "",
+    "responsable": "JULISSA TRONCOSO VENEGAS",
+    "fechaLimite": "",
+    "estado": "Pendiente",
+    "creada": "2026-08-19T17:01:08.380Z"
+  },
+  {
+    "id": "mtc0lh8aewew5",
+    "tipo": "Correctivo",
+    "maquina": "CNC5",
+    "maquinaNombre": "Muratec",
+    "fallaComun": "FUGA DE ACEITE",
+    "referencia": "CNC5",
+    "categoria": "",
+    "descripcion": "",
+    "responsable": "JOSE CARLOS FLORES MENCHACA",
+    "fechaLimite": "2026-09-02",
+    "estado": "Pendiente",
+    "creada": "2026-08-27T21:08:14.074Z"
+  }
+]

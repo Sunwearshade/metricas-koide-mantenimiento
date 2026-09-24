@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Métricas de Mantenimiento — Tiempo Muerto · MTTR · MTBF</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="assets/koide-logo-cropped.png" alt="Koide México" class="brand-logo" />
+      <div>
+        <h1>Métricas de Mantenimiento</h1>
+        <p>Área exclusiva: Mantenimiento · Módulo Tiempo Muerto</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="update-info">
+        <span id="last-update" class="badge">—</span>
+        <span id="source-info" class="badge badge-muted">—</span>
+      </div>
+      <button id="btn-refresh" class="btn" type="button">
+        <span class="btn-spinner" hidden></span>Actualizar datos
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="menu" aria-label="Secciones">
+      <button class="menu-item active" data-view="tiempo" type="button">Tiempo muerto</button>
+      <button class="menu-item" data-view="contramedidas" type="button">Contramedidas</button>
+      <button class="menu-item" data-view="mttr" type="button">MTTR / MTBF</button>
+      <button class="menu-item" data-view="tecnicos" type="button">Desempeño técnicos</button>
+      <button class="menu-item" data-view="bonos" type="button">Bonos semanales</button>
+      <button class="menu-item" data-view="calendarios" type="button">Calendarios de mantenimiento</button>
+      <button class="menu-item" data-view="documentos" type="button">Documentos</button>
+      <button class="menu-item" data-view="gastos" type="button">Control de gastos</button>
+      <button class="menu-item" data-view="entregas" type="button">Tiempos de entrega</button>
+    </aside>
+
+    <main class="container">
+      <section class="panel filters" aria-label="Filtros">
+        <div class="filter-group">
+          <label for="fecha-desde">Desde</label>
+          <input type="date" id="fecha-desde" />
+        </div>
+        <div class="filter-group">
+          <label for="fecha-hasta">Hasta</label>
+          <input type="date" id="fecha-hasta" />
+        </div>
+        <div class="filter-group">
+          <label for="filtro-categoria">Categoría</label>
+          <select id="filtro-categoria">
+            <option value="">Todas</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filtro-tipo">Tipo de máquina</label>
+          <select id="filtro-tipo">
+            <option value="">Todas</option>
+          </select>
+        </div>
+        <div class="quick-range">
+          <button class="chip" data-range="today" type="button">Hoy</button>
+          <button class="chip" data-range="7" type="button">7 días</button>
+          <button class="chip" data-range="30" type="button">30 días</button>
+          <button class="chip" data-range="month" type="button">Este mes</button>
+          <button class="chip" data-range="all" type="button">Todo</button>
+        </div>
+        <div class="active-filters" id="active-filters" hidden></div>
+      </section>
+
+      <section class="month-tabs" id="month-tabs" aria-label="Pestañas por mes"></section>
+
+      <!-- ================= TIEMPO MUERTO ================= -->
+      <div class="view" id="view-tiempo">
+        <section class="top3" aria-label="Top 3 máquinas">
+          <div class="panel-head top3-head">
+            <h2>Top 3 máquinas con mayor tiempo de reparación</h2>
+            <span class="badge badge-muted" id="top3-periodo">—</span>
+          </div>
+          <div class="top3-grid" id="top3-grid"></div>
+        </section>
+
+        <section class="kpis" aria-label="Indicadores">
+          <div class="kpi">
+            <span class="kpi-label">Tiempo muerto total</span>
+            <span class="kpi-value" id="kpi-total">—</span>
+            <span class="kpi-sub" id="kpi-total-sub">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Tiempo de reparación total</span>
+            <span class="kpi-value" id="kpi-reparacion">—</span>
+            <span class="kpi-sub" id="kpi-reparacion-sub">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Número de paros</span>
+            <span class="kpi-value" id="kpi-paros">—</span>
+            <span class="kpi-sub">paros registrados</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Promedio de reparación</span>
+            <span class="kpi-value" id="kpi-promedio">—</span>
+            <span class="kpi-sub">minutos por paro</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Tiempo de respuesta total</span>
+            <span class="kpi-value" id="kpi-respuesta-total">—</span>
+            <span class="kpi-sub" id="kpi-respuesta-total-sub">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Tiempo de respuesta promedio</span>
+            <span class="kpi-value" id="kpi-respuesta-prom">—</span>
+            <span class="kpi-sub">minutos por paro</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Máquina con mayor reparación</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-maquina">—</span>
+            <span class="kpi-sub" id="kpi-maquina-sub">—</span>
+          </div>
+        </section>
+
+        <section class="panel chart-panel">
+          <div class="panel-head">
+            <h2>Tiempo de reparación por máquina</h2>
+            <div class="toggle">
+              <label><input type="radio" name="unidad" value="horas" checked /> Horas</label>
+              <label><input type="radio" name="unidad" value="minutos" /> Minutos</label>
+              <label><input type="radio" name="unidad" value="paros" /> Nº paros</label>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chart-maquinas" height="110"></canvas>
+          </div>
+          <p class="panel-hint" id="chart-hint">Selecciona un rango de fechas para ver el detalle.</p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Total de reparación por área</h2>
+            <span class="badge badge-muted">solo tiempo de reparación</span>
+          </div>
+          <div class="kpis" id="tipos-resumen" style="margin-bottom:0"></div>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Biselado (B)</h2>
+              <span class="badge badge-muted">tiempo de reparación por máquina</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-biselado" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Cortadoras (C)</h2>
+              <span class="badge badge-muted">tiempo de reparación por máquina</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-cortadoras" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Prensas (P)</h2>
+              <span class="badge badge-muted">tiempo de reparación por máquina</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-prensas" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>CNC's (CNC)</h2>
+              <span class="badge badge-muted">tiempo de reparación por máquina</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-cnc" height="110"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Evolución de reparación por día</h2>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-dias" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Resumen por máquina</h2>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="tabla-resumen">
+                <thead>
+                  <tr>
+                    <th>Máquina</th>
+                    <th>Proceso</th>
+                    <th>Paros</th>
+                    <th>Min. reparación</th>
+                    <th>% del total</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Todos los paros del mes</h2>
+            <span class="badge badge-muted" id="detalle-cuenta">—</span>
+          </div>
+          <div class="table-wrap table-wrap-full">
+            <table class="table" id="tabla-detalle">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Máquina</th>
+                  <th>Turno</th>
+                  <th>Grupo</th>
+                  <th>Categoría</th>
+                  <th>Descripción del problema</th>
+                  <th>Inicio</th>
+                  <th>Fin</th>
+                  <th>Minutos</th>
+                  <th>Reparación</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= MTTR / MTBF ================= -->
+      <div class="view" id="view-mttr" hidden>
+        <section class="kpis" aria-label="Indicadores MTTR/MTBF">
+          <div class="kpi">
+            <span class="kpi-label">MTTR global</span>
+            <span class="kpi-value" id="kpi-mttr">—</span>
+            <span class="kpi-sub">tiempo medio de reparación</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTBF global</span>
+            <span class="kpi-value" id="kpi-mtbf">—</span>
+            <span class="kpi-sub">tiempo medio entre fallas</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Reparaciones</span>
+            <span class="kpi-value" id="kpi-reparaciones">—</span>
+            <span class="kpi-sub">paros finalizados</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Fallas</span>
+            <span class="kpi-value" id="kpi-fallas">—</span>
+            <span class="kpi-sub">paros registrados</span>
+          </div>
+        </section>
+
+        <section class="grid-2" aria-label="Fórmulas MTTR y MTBF">
+          <section class="panel formula-panel">
+            <div class="panel-head">
+              <h2>Fórmula MTTR</h2>
+              <span class="badge badge-muted">Tiempo medio de reparación</span>
+            </div>
+            <div class="formula-box">
+              <span class="formula-label">MTTR</span>
+              <span class="formula-expr">MTTR = Tiempo total de inactividad / Número de fallas</span>
+            </div>
+            <p class="panel-hint">
+              Cuánto tarda en promedio una reparación. Ejemplo con el periodo actual:
+              <span id="fm-mttr-num">—</span> min ÷ <span id="fm-mttr-div">—</span> fallas =
+              <strong id="fm-mttr-res">—</strong>
+            </p>
+          </section>
+
+          <section class="panel formula-panel">
+            <div class="panel-head">
+              <h2>Fórmula MTBF</h2>
+              <span class="badge badge-muted">Tiempo medio entre fallas</span>
+            </div>
+            <div class="formula-box">
+              <span class="formula-label">MTBF</span>
+              <span class="formula-expr">MTBF = Tiempo total de funcionamiento / Número de fallas</span>
+            </div>
+            <p class="panel-hint">
+              Tiempo promedio que la máquina opera sin fallar: 22 horas diarias × días del mes
+              (eliminando las 24 h de cada domingo) ÷ número de fallas. Ejemplo con el periodo actual:
+              <span id="fm-mtbf-op">—</span> ÷ <span id="fm-mtbf-div">—</span> fallas =
+              <strong id="fm-mtbf-res">—</strong>
+            </p>
+          </section>
+        </section>
+
+        <section class="kpis" aria-label="Promedio MTTR y MTBF por tipo de máquina">
+          <div class="kpi">
+            <span class="kpi-label">MTTR · Biselado</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mttr-biselado">—</span>
+            <span class="kpi-sub">horas por reparación</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTTR · Cortadoras</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mttr-cortadoras">—</span>
+            <span class="kpi-sub">horas por reparación</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTTR · Prensas</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mttr-prensas">—</span>
+            <span class="kpi-sub">horas por reparación</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTTR · CNC's</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mttr-cnc">—</span>
+            <span class="kpi-sub">horas por reparación</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTBF · Biselado</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mtbf-biselado">—</span>
+            <span class="kpi-sub">horas entre fallas</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTBF · Cortadoras</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mtbf-cortadoras">—</span>
+            <span class="kpi-sub">horas entre fallas</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTBF · Prensas</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mtbf-prensas">—</span>
+            <span class="kpi-sub">horas entre fallas</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">MTBF · CNC's</span>
+            <span class="kpi-value kpi-value-sm" id="kpi-mtbf-cnc">—</span>
+            <span class="kpi-sub">horas entre fallas</span>
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTTR por máquina</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mttr" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTBF por máquina</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mtbf" height="110"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTTR · Biselado (B)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mttr-biselado" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTTR · Cortadoras (C)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mttr-cortadoras" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTTR · Prensas (P)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mttr-prensas" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTTR · CNC's (CNC)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mttr-cnc" height="110"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTBF · Biselado (B)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mtbf-biselado" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTBF · Cortadoras (C)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mtbf-cortadoras" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTBF · Prensas (P)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mtbf-prensas" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>MTBF · CNC's (CNC)</h2>
+              <span class="badge badge-muted">horas</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-mtbf-cnc" height="110"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>MTTR y MTBF por máquina</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tabla-mttr">
+              <thead>
+                <tr>
+                  <th>Máquina</th>
+                  <th>Tipo</th>
+                  <th>Fallas</th>
+                  <th>Reparaciones</th>
+                  <th>Tiempo reparación (min)</th>
+                  <th>MTTR (h)</th>
+                  <th>MTBF (h)</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="panel-hint">
+            Solo se consideran los paros con tiempo de reparación. MTTR = tiempo total de reparación ÷ nº
+            reparaciones · MTBF = 22 horas diarias × días del mes (sin domingos) ÷ número de fallas.
+          </p>
+        </section>
+      </div>
+
+      <!-- Modal completar contramedida -->
+      <div class="modal-overlay hidden-modal" id="modal-complete">
+        <div class="modal-panel">
+          <div class="panel-head">
+            <h2>Completar contramedida</h2>
+            <button type="button" class="btn-close" id="cm-complete-cancel">&times;</button>
+          </div>
+          <p class="panel-hint" id="cm-complete-ref">—</p>
+          <div class="form">
+            <div class="filter-group form-full">
+              <label for="cm-complete-trabajo">Descripción del trabajo realizado</label>
+              <textarea id="cm-complete-trabajo" rows="3" placeholder="Describa el trabajo que se realizó para resolver la falla..." required></textarea>
+            </div>
+            <div class="cm-foto-row">
+              <div class="cm-foto-col">
+                <label for="cm-foto-antes">Foto ANTES</label>
+                <input type="file" id="cm-foto-antes" accept="image/jpeg,image/png" />
+                <div class="cm-foto-preview" id="cm-preview-antes"></div>
+              </div>
+              <div class="cm-foto-col">
+                <label for="cm-foto-despues">Foto DESPUÉS</label>
+                <input type="file" id="cm-foto-despues" accept="image/jpeg,image/png" />
+                <div class="cm-foto-preview" id="cm-preview-despues"></div>
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn" id="cm-complete-save">Marcar como cumplida</button>
+            <button type="button" class="btn btn-ghost" id="cm-complete-cancel2">Cancelar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal reporte de contramedida completada -->
+      <div class="modal-overlay hidden-modal" id="modal-report">
+        <div class="modal-panel modal-report-panel">
+          <div class="panel-head">
+            <h2>Reporte de contramedida</h2>
+            <button type="button" class="btn-close" id="cm-report-close">&times;</button>
+          </div>
+          <div id="modal-report-content"></div>
+        </div>
+      </div>
+
+      <!-- ================= DESEMPEÑO DE TÉCNICOS ================= -->
+      <div class="view" id="view-tecnicos" hidden>
+        <section class="kpis" aria-label="Indicadores técnicos">
+          <div class="kpi">
+            <span class="kpi-label">Técnicos</span>
+            <span class="kpi-value" id="kpi-tec-tecnicos">—</span>
+            <span class="kpi-sub">números de empleado</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Paros atendidos</span>
+            <span class="kpi-value" id="kpi-tec-paros">—</span>
+            <span class="kpi-sub">contados por técnico</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Índice global del equipo</span>
+            <span class="kpi-value" id="kpi-tec-indice">—</span>
+            <span class="kpi-sub">0–100, ponderado</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Respuesta mediana</span>
+            <span class="kpi-value" id="kpi-tec-respuesta">—</span>
+            <span class="kpi-sub">minutos (equipo)</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Reparación mediana</span>
+            <span class="kpi-value" id="kpi-tec-reparacion">—</span>
+            <span class="kpi-sub">minutos (equipo)</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Cumplimiento global</span>
+            <span class="kpi-value" id="kpi-tec-cumplimiento">—</span>
+            <span class="kpi-sub">% de paros a tiempo</span>
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Índice de desempeño por técnico</h2>
+              <span class="badge badge-muted">puntos 0–100</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-tec-indice" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Dimensiones por técnico</h2>
+              <select id="tec-radar-select" class="tec-select" aria-label="Técnico para radar"></select>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-tec-radar" height="110"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section class="grid-2">
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Mediana de respuesta por técnico</h2>
+              <span class="badge badge-muted">objetivo 15 min</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-tec-respuesta" height="110"></canvas>
+            </div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="panel-head">
+              <h2>Mediana de reparación por técnico</h2>
+              <span class="badge badge-muted">vs. estándar por tipo</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="chart-tec-reparacion" height="110"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Control de desempeño por técnico</h2>
+            <span class="badge badge-muted" id="tecnico-cuenta">—</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tabla-tecnicos">
+              <thead>
+                <tr>
+                  <th>Técnico</th>
+                  <th>Paros</th>
+                  <th>Puntos</th>
+                  <th>Respuesta</th>
+                  <th>Reparación</th>
+                  <th>Productividad</th>
+                  <th>Cumplimiento</th>
+                  <th>Índice</th>
+                  <th>Clasificación</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="panel-hint">
+            Cada dimensión se puntúa de 0 a 100 y el índice pondera: Respuesta 25%, Reparación 30%,
+            Productividad 25% y Cumplimiento 20%.             Respuesta: ≤15 min = 100, 16–30 = 80, 31–60 = 60,
+            &gt;60 = 40. Reparación: eficiencia = tiempo estándar ÷ tiempo real × 100 (máximo 100),
+            con estándar según el tipo de falla. Productividad: puntos de complejidad (sencilla 1,
+            media 2, compleja 3) ÷ horas estimadas (turnos × 8 h). Cumplimiento: % de paros terminados
+            dentro del tiempo estándar. Clasificación: 🟢 ≥90 Excelente, 🟢 85–90 Muy bueno,
+            🟢 80–85 Bueno, 🟡 70–79 Requiere seguimiento, 🔴 &lt;70 Requiere acción.
+          </p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Detalle de paros por técnico</h2>
+            <select id="tec-detalle-select" class="tec-select" aria-label="Técnico para detalle"></select>
+          </div>
+          <div id="tec-detalle-resumen" class="tec-resumen"></div>
+          <div class="table-wrap table-wrap-full">
+            <table class="table" id="tabla-tec-detalle">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Máquina</th>
+                  <th>Categoría</th>
+                  <th>Falla</th>
+                  <th class="num">Respuesta (min)</th>
+                  <th class="num">Reparación (min)</th>
+                  <th class="num">Estándar (min)</th>
+                  <th>¿A tiempo?</th>
+                  <th>Reincide 30d</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="panel-hint">
+            Reincide 30d = el mismo equipo volvió a fallar con la misma descripción dentro de 30 días.
+            La calidad de reparación se calcula como 100% − % de paros con reincidencia en 30 días.
+          </p>
+        </section>
+      </div>
+
+      <!-- ================= BONOS ================= -->
+      <div class="view" id="view-bonos" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Configuración de la semana</h2>
+            <span class="badge badge-muted" id="bono-estado">—</span>
+          </div>
+          <div class="filter-bar">
+            <div class="filter-group">
+              <label>Plantilla Excel (formato de bonos)</label>
+              <input type="file" id="bono-archivo" accept=".xlsx,.xls">
+            </div>
+            <div class="filter-group">
+              <label>Lunes de la semana a bonificar</label>
+              <input type="date" id="bono-lunes">
+            </div>
+            <div class="filter-group">
+              <label>Buscar por semana o fecha</label>
+              <div class="bono-search">
+                <input type="text" id="bono-buscar" placeholder="32 · 2026-W32 · 03/08/2026 · 2026-08-03">
+                <button type="button" class="btn" id="bono-buscar-btn">Buscar</button>
+              </div>
+            </div>
+            <div class="filter-group">
+              <label>Semana guardada</label>
+              <select id="bono-semanas"></select>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn" id="bono-anterior">Semana anterior</button>
+              <button type="button" class="btn" id="bono-generar">Generar bonos</button>
+              <button type="button" class="btn btn-ghost" id="bono-guardar">Guardar semana</button>
+              <button type="button" class="btn btn-ghost" id="bono-imprimir">Imprimir</button>
+            </div>
+          </div>
+          <p class="panel-hint">
+            El resultado % es el índice de desempeño de cada técnico en la semana (lunes a domingo).
+            Bono por resultado: ≥90% = $350 (nivel A), 85–89.9% = $250 (B), 80–84.9% = $150 (C),
+            &lt;80% = sin bono (NG). Las celdas de resultados, montos y niveles se pueden editar
+            directamente en el documento antes de guardar o imprimir.
+          </p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Documento de bonos</h2>
+            <span class="badge badge-muted" id="bono-semana-tag">—</span>
+          </div>
+          <p class="panel-hint" id="bono-mensaje" hidden></p>
+          <div class="bono-scroll">
+            <div id="print-bonos" class="bono-doc"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= CALENDARIOS ================= -->
+      <div class="view" id="view-calendarios" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Calendario de mantenimiento</h2>
+            <span class="badge badge-muted" id="cal-estado">—</span>
+          </div>
+          <div class="filter-bar">
+            <div class="filter-group">
+              <label>Subir Excel del calendario</label>
+              <input type="file" id="cal-archivo" accept=".xlsx,.xls">
+            </div>
+            <div class="filter-group">
+              <label>Calendario</label>
+              <select id="cal-select"></select>
+            </div>
+            <div class="filter-group">
+              <label>Semana a revisar (lunes)</label>
+              <input type="date" id="cal-semana">
+            </div>
+            <div class="filter-group">
+              <label>Buscar semana o fecha</label>
+              <div class="bono-search">
+                <input type="text" id="cal-buscar" placeholder="32 · 2026-W32 · 03/08/2026">
+                <button type="button" class="btn" id="cal-buscar-btn">Buscar</button>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-ghost" id="cal-anterior">Semana anterior</button>
+              <button type="button" class="btn btn-danger btn-ghost" id="cal-eliminar">Eliminar</button>
+            </div>
+          </div>
+          <p class="panel-hint">
+            Haz clic sobre una casilla del calendario para marcarla según la nomenclatura
+            (Realizado / Reprogramado / Pendiente). La agenda de la semana muestra los
+            mantenimientos y equipos que tocan en esa semana, con su estado.
+          </p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Agenda de la semana</h2>
+            <span class="badge badge-muted" id="cal-semana-tag">—</span>
+          </div>
+          <p class="panel-hint" id="cal-mensaje" hidden></p>
+          <div class="table-wrap">
+            <table class="table" id="tabla-cal-agenda">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Equipo / Activo</th>
+                  <th>Actividad / Código</th>
+                  <th>Fecha</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Calendario (como en el archivo)</h2>
+            <span class="badge badge-muted">clic en la casilla para cambiar estado</span>
+          </div>
+          <div class="bono-scroll">
+            <div id="cal-grid" class="bono-doc"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= DOCUMENTOS ================= -->
+      <div class="view" id="view-documentos" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Documentos de mantenimiento</h2>
+            <span class="badge badge-muted" id="doc-estado">—</span>
+          </div>
+          <p class="panel-hint">
+            Haz clic en el globo de cada categoría para subir archivos (dibujos, planos, planes,
+            indicadores, check list e instrucciones de trabajo).
+          </p>
+        </section>
+        <div class="docs-grid" id="docs-grid"></div>
+      </div>
+
+      <!-- ================= CONTRAMEDIDAS ================= -->
+      <div class="view" id="view-contramedidas" hidden>
+        <section class="grid-2">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Fallas más comunes</h2>
+              <span class="badge badge-muted">según filtros activos</span>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="tabla-fallas">
+                <thead>
+                  <tr>
+                    <th>Categoría</th>
+                    <th>Paros</th>
+                    <th>Minutos</th>
+                    <th>%</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2 id="form-titulo">Agendar contramedida</h2>
+            </div>
+            <form id="form-contramedida" class="form">
+              <div class="form-grid">
+                <div class="filter-group">
+                  <label for="cm-maquina">Equipo / Máquina</label>
+                  <select id="cm-maquina">
+                    <option value="">— Seleccionar equipo —</option>
+                  </select>
+                </div>
+                <div class="filter-group">
+                  <label for="cm-tipo">Categoría</label>
+                  <select id="cm-tipo">
+                    <option value="">— Seleccionar —</option>
+                    <option value="MTTR">MTTR</option>
+                    <option value="MTBF">MTBF</option>
+                    <option value="Falla mecánica">Falla mecánica</option>
+                    <option value="Falla eléctrica">Falla eléctrica</option>
+                    <option value="Falla común">Falla común</option>
+                    <option value="Preventivo">Preventivo</option>
+                    <option value="Correctivo">Correctivo</option>
+                  </select>
+                </div>
+                <div class="filter-group form-full falla-hint-box" id="cm-falla-box" hidden>
+                  <div class="falla-hint-title">Falla más común de <strong id="cm-falla-maq">—</strong></div>
+                  <div class="falla-hint-cats" id="cm-falla-cats"></div>
+                </div>
+                <div class="filter-group">
+                  <label for="cm-responsable">Responsable</label>
+                  <select id="cm-responsable">
+                    <option value="">— Seleccionar técnico —</option>
+                  </select>
+                </div>
+                <div class="filter-group">
+                  <label for="cm-fecha">Fecha límite</label>
+                  <input type="date" id="cm-fecha" />
+                </div>
+                <div class="filter-group">
+                  <label for="cm-estado">Estado</label>
+                  <select id="cm-estado">
+                    <option value="Pendiente">Pendiente</option>
+                    <option value="En proceso">En proceso</option>
+                    <option value="Completado">Completado</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn" id="cm-save">Guardar contramedida</button>
+                <button type="button" class="btn btn-ghost" id="cm-cancel" hidden>Cancelar</button>
+              </div>
+            </form>
+          </section>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Calendario de seguimiento</h2>
+            <div class="cm-cal-nav">
+              <button type="button" class="btn btn-sm btn-ghost" id="cm-cal-prev">&larr;</button>
+              <span id="cm-cal-mes">—</span>
+              <button type="button" class="btn btn-sm btn-ghost" id="cm-cal-next">&rarr;</button>
+            </div>
+          </div>
+          <div class="cm-calendar" id="cm-calendar"></div>
+          <div class="cm-cal-legend">
+            <span class="cm-cal-legend-item"><span class="badge-status warn"></span> Pendiente</span>
+            <span class="cm-cal-legend-item"><span class="badge-status info"></span> En proceso</span>
+            <span class="cm-cal-legend-item"><span class="badge-status ok"></span> Completado</span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Contramedidas registradas</h2>
+            <span class="badge badge-muted" id="cm-cuenta">—</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tabla-contramedidas">
+              <thead>
+                <tr>
+                  <th>Equipo</th>
+                  <th>Tipo</th>
+                  <th>Falla común</th>
+                  <th>Responsable</th>
+                  <th>Fecha límite</th>
+                  <th>Estado</th>
+                  <th>Creada</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= CONTROL DE GASTOS ================= -->
+      <div class="view" id="view-gastos" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Control de gastos y material pendiente</h2>
+            <span class="badge badge-muted" id="gastos-estado">—</span>
+          </div>
+          <p class="panel-hint">
+            Material agrupado por <strong>fecha de entrega</strong> (recepci&#243;n) de todas las hojas.
+            <span style="color:#16a34a;font-weight:600">Confirmado</span> = con PO asignado.
+            <span style="color:#f59e0b;font-weight:600">Pendiente</span> = sin PO.
+            Gasto real del mes = Confirmado + Pendiente. Presupuesto mensual: <strong>$510,000 MXN</strong>.
+          </p>
+          <div class="dolar-rate-box">
+            <label for="gastos-dolar-rate">Tipo de cambio USD:</label>
+            <div class="dolar-input-wrap">
+              <span class="dolar-prefix">$</span>
+              <input type="number" id="gastos-dolar-rate" min="1" max="100" step="0.5" value="17">
+              <span class="dolar-suffix">MXN</span>
+            </div>
+            <button id="btn-gastos-refresh" class="btn btn-sm" type="button">
+              <span class="btn-spinner" hidden></span><span class="btn-label">Actualizar datos del Excel</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="month-tabs" id="gastos-month-tabs"></section>
+
+        <section class="panel" id="gastos-resumen-panel">
+          <h3 id="gastos-mes-titulo">Resumen</h3>
+          <div id="gastos-budget-bar"></div>
+          <div class="table-wrap">
+            <table class="table" id="gastos-resumen-table">
+              <thead>
+                <tr>
+                  <th>Gasto confirmado (con PO)</th>
+                  <th>Gasto externo (con comentario)</th>
+                  <th>Gasto programado sin PO</th>
+                  <th>Presupuesto</th>
+                  <th>Disponible / Excedente</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" id="gastos-general-panel" hidden>
+          <h3>Gasto anual por proveedor</h3>
+          <div class="table-wrap" style="margin-bottom:1.5rem">
+            <table class="table" id="gastos-general-proveedores">
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th>Cotizaciones</th>
+                  <th>Gasto con PO</th>
+                  <th>Gasto sin PO</th>
+                  <th>Gasto externo</th>
+                  <th>Total anual</th>
+                  <th>% del año</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="ga-charts">
+            <div class="ga-chart">
+              <h4>Inversi&oacute;n por proveedor (Top 10)</h4>
+              <canvas id="gastos-chart-proveedores" width="400" height="260"></canvas>
+            </div>
+            <div class="ga-chart">
+              <h4>Gasto por mes</h4>
+              <canvas id="gastos-chart-meses" width="400" height="260"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3 id="gastos-prov-titulo">Gastos por proveedor</h3>
+          <div class="table-wrap">
+            <table class="table" id="gastos-proveedores">
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th>Cotizaciones</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h3 id="gastos-partidas-titulo">Material pendiente de entrega</h3>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="gastos-partidas">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>F. elaboración</th>
+                  <th>F. recepción</th>
+                  <th>Descripción</th>
+                  <th>Cotización</th>
+                  <th>PO</th>
+                  <th>Proveedor</th>
+                  <th>Total</th>
+                  <th>Estatus</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= TIEMPOS DE ENTREGA ================= -->
+      <div class="view" id="view-entregas" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Tiempos de entrega — Mantenimiento (MTTO)</h2>
+            <span class="badge badge-muted" id="entregas-estado">—</span>
+          </div>
+          <p class="panel-hint">
+            <strong>POs confirmadas en Requisiciones</strong> con seguimiento en
+            <code>TIEMPO DE ENTREGA.xlsx</code> (hoja ENTREGAS), <strong>solo departamento de
+            mantenimiento</strong> (depto termina en MTTO) y agrupadas por mes.
+            Color del rengl&#243;n seg&#250;n estatus:
+            <span style="color:#16a34a;font-weight:600">verde = entregado</span>,
+            <span style="color:#f59e0b;font-weight:600">amarillo = pendiente</span>,
+            <span style="color:#dc2626;font-weight:600">rojo = retrasado</span>,
+            <span style="color:#f97316;font-weight:600">naranja = parcial</span>.
+            Los PO de otros departamentos quedan fuera.
+          </p>
+          <div class="dolar-rate-box">
+            <button id="btn-entregas-refresh" class="btn btn-sm" type="button">
+              <span class="btn-spinner" hidden></span><span class="btn-label">Actualizar datos del Excel</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="month-tabs" id="entregas-month-tabs"></section>
+
+        <section class="panel">
+          <h3 id="entregas-pend-titulo">Pendientes de entrega</h3>
+          <div class="entregas-buscar-box">
+            <label for="entregas-buscar">Buscar PO (todos los meses):</label>
+            <input type="text" id="entregas-buscar" placeholder="N&#250;mero de PO o texto&#8230;" autocomplete="off" />
+            <button type="button" id="btn-entregas-limpiar" class="btn btn-sm">Limpiar</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="entregas-pendientes">
+              <thead>
+                <tr>
+                  <th>PO</th>
+                  <th>Proveedor</th>
+                  <th>Material</th>
+                  <th>Cant.</th>
+                  <th>F. env&#237;o PO</th>
+                  <th>F. estimada</th>
+                  <th>D&#237;as</th>
+                  <th>Estatus</th>
+                  <th>Observaciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3 id="entregas-ent-titulo">Entregados</h3>
+          <div class="table-wrap">
+            <table class="table" id="entregas-entregados">
+              <thead>
+                <tr>
+                  <th>PO</th>
+                  <th>Proveedor</th>
+                  <th>Material</th>
+                  <th>Cant.</th>
+                  <th>F. env&#237;o PO</th>
+                  <th>F. estimada</th>
+                  <th>D&#237;as</th>
+                  <th>Estatus</th>
+                  <th>Observaciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot">
+    Datos extraídos (solo lectura) del módulo Tiempo Muerto de Koide · Fuente:
+    <code>\\192.168.1.201\SystemKoide\koide-production-app</code>
+  </footer>
+
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

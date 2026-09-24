@@ -1,0 +1,6 @@
+node_modules/
+.env
+.env.test
+logs/
+backups/
+__pycache__/

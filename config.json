@@ -1,0 +1,70 @@
+{
+  "koideBaseUrl": "http://192.168.1.201:4000",
+  "responsibleArea": "Mantenimiento",
+  "maintenanceTechnicians": [
+    { "employee_number": "1382", "name": "PEDRO ENRIQUE ORTIZ" },
+    { "employee_number": "1377", "name": "MARCELINO FIGUEROA GAMES" },
+    { "employee_number": "1979", "name": "J. GUADALUPE ESPINOZA GARCIA" },
+    { "employee_number": "2000", "name": "ADRIAN VILLELA GALLEGOS" },
+    { "employee_number": "1982", "name": "JULISSA TRONCOSO VENEGAS" },
+    { "employee_number": "1993", "name": "FRANCISCO JAVIER CHAVEZ OLVERA" }
+  ],
+  "performance": {
+    "shiftHours": 8,
+    "weights": { "respuesta": 0.25, "reparacion": 0.3, "productividad": 0.25, "cumplimiento": 0.2 },
+    "reincidenciaDias": [7, 15, 30],
+    "clasificacion": [
+      { "min": 90, "label": "Excelente", "cls": "ok" },
+      { "min": 85, "label": "Muy bueno", "cls": "ok" },
+      { "min": 80, "label": "Bueno", "cls": "ok" },
+      { "min": 70, "label": "Requiere seguimiento", "cls": "warn" },
+      { "min": 0, "label": "Requiere acción", "cls": "open" }
+    ],
+    "responseBands": [
+      { "max": 15, "score": 100 },
+      { "max": 30, "score": 80 },
+      { "max": 60, "score": 60 },
+      { "score": 40 }
+    ],
+    "standardTimes": [
+      { "tipo": "Ajuste", "match": "ajuste", "minutos": 30, "puntos": 1 },
+      { "tipo": "Sensor", "match": "sensor", "minutos": 45, "puntos": 2 },
+      { "tipo": "Eléctrico", "match": "electr", "minutos": 60, "puntos": 2 },
+      { "tipo": "Neumático", "match": "neumatic", "minutos": 60, "puntos": 2 },
+      { "tipo": "Hidráulico", "match": "hidraulic", "minutos": 120, "puntos": 3 },
+      { "tipo": "Cambio de componente", "match": "cambio|componente", "minutos": 120, "puntos": 3 },
+      { "tipo": "Mecánico", "match": "mecan", "minutos": 90, "puntos": 2 },
+      { "tipo": "Otro", "match": "", "minutos": 90, "puntos": 2 }
+    ]
+  },
+  "bonos": {
+    "semana": { "semana": "D9", "periodoIni": "N9", "periodoFin": "P9", "fecha": "D7" },
+    "montos": [
+      { "min": 90, "nivel": "A", "monto": 350 },
+      { "min": 85, "nivel": "B", "monto": 250 },
+      { "min": 80, "nivel": "C", "monto": 150 }
+    ],
+    "secciones": [
+      {
+        "tipo": "PRODUCTIVIDAD",
+        "filas": [13, 14, 15, 16, 17, 18, 19],
+        "cols": { "empleado": "B", "nivel": "H", "monto": "J", "resultado": "N", "calificacion": "P", "razon": "R" }
+      },
+      {
+        "tipo": "EFICIENCIA",
+        "filas": [42, 43],
+        "cols": { "empleado": "B", "nivel": "H", "monto": "J", "resultado": "N", "calificacion": "P", "razon": "R" }
+      }
+    ]
+  },
+  "calendarios": {
+    "colores": {
+      "Realizado": "#16a34a",
+      "Reprogramado": "#f59e0b",
+      "Pendiente": "#94a3b8"
+    }
+  },
+  "serverPort": 4173,
+  "dailyUpdateHour": 7,
+  "dailyUpdateMinute": 0
+}

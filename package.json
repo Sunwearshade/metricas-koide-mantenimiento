@@ -1,0 +1,23 @@
+{
+  "name": "metricos-mantenimiento",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Metricos de mantenimiento (Node.js + MySQL)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "db:setup": "node scripts/db-setup.js",
+    "migrate": "node scripts/migrate-json-to-mysql.js",
+    "migrate:verify": "node scripts/migrate-json-to-mysql.js --verify-only",
+    "test": "node --test --test-reporter=spec tests/integration.test.js"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "mysql2": "^3.24.4",
+    "office-crypto": "^0.1.0",
+    "xlsx": "^0.18.5"
+  }
+}
