@@ -11,6 +11,7 @@ loadEnvFile();
 
 const db = require("./lib/db");
 const store = require("./lib/store");
+const auth = require("./lib/auth");
 
 const ROOT = __dirname;
 const PYTHON = env("PYTHON_PATH", process.platform === "win32" ? "python" : "python3");
@@ -191,9 +192,72 @@ function serveStatic(req, res) {
       res.end("No encontrado");
       return;
     }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream" });
+    const ext = path.extname(filePath).toLowerCase();
+    const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
+    // Sin cache para las paginas: tras cerrar sesion, "Atras" no muestra la aplicacion.
+    if (ext === ".html") headers["Cache-Control"] = "no-store";
+    res.writeHead(200, headers);
     res.end(data);
   });
+}
+
+/* ---------- Login ---------- */
+
+// Rutas accesibles sin sesion. Todo lo demas requiere login.
+const PUBLIC_PATHS = new Set(["/login", "/api/auth/login", "/api/health", "/assets/koide-logo-cropped.png"]);
+
+function serveLogin(res) {
+  fs.readFile(path.join(PUBLIC_DIR, "login.html"), (err, data) => {
+    if (err) return sendJson(res, 500, { error: "Falta login.html" });
+    res.writeHead(200, { "Content-Type": MIME[".html"], "Cache-Control": "no-store" });
+    res.end(data);
+  });
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, "Cache-Control": "no-store" });
+  res.end();
+}
+
+// Devuelve true si la peticion ya fue respondida (login/logout/sin sesion).
+async function handleAuth(req, res, url) {
+  if (url === "/api/auth/login" && req.method === "POST") {
+    const body = await readBody(req, 10e3);
+    const r = await auth.login(req, body.usuario, body.password);
+    if (r.error) {
+      log(`[auth] Login fallido para "${String(body.usuario || "").slice(0, 60)}" desde ${req.socket.remoteAddress} (${r.status})`);
+      sendJson(res, r.status, { error: r.error });
+      return true;
+    }
+    log(`[auth] Sesion iniciada: ${r.usuario.usuario} desde ${req.socket.remoteAddress}`);
+    res.writeHead(200, { "Content-Type": MIME[".json"], "Set-Cookie": r.cookie, "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ ok: true, usuario: r.usuario }));
+    return true;
+  }
+  if (url === "/api/auth/logout" && req.method === "POST") {
+    const cookie = await auth.logout(req);
+    res.writeHead(200, { "Content-Type": MIME[".json"], "Set-Cookie": cookie, "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ ok: true }));
+    return true;
+  }
+  if (url === "/login" || url === "/login.html") {
+    if (await auth.sessionUser(req)) redirect(res, "/");
+    else serveLogin(res);
+    return true;
+  }
+  if (PUBLIC_PATHS.has(url)) return false;
+
+  const user = await auth.sessionUser(req);
+  if (!user) {
+    if (url.startsWith("/api/")) sendJson(res, 401, { error: "Sesion no iniciada o expirada" });
+    else redirect(res, "/login");
+    return true;
+  }
+  if (url === "/api/auth/me") {
+    sendJson(res, 200, { usuario: user.usuario, nombre: user.nombre, rol: user.rol });
+    return true;
+  }
+  return false;
 }
 
 function sendJson(res, code, obj) {
@@ -663,6 +727,7 @@ async function handleApi(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = req.url.split("?")[0];
   try {
+    if (await handleAuth(req, res, url)) return;
     if (url === "/api/data") {
       if (!cache) await refresh();
       if (!cache) return sendJson(res, 502, { error: "Aun no hay datos disponibles" });

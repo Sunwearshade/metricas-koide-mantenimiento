@@ -1,0 +1,958 @@
+{
+  "descripcion": "Manifiesto de la migracion de archivos/datos del sistema legacy 'metricos' al proyecto nuevo. Documenta checksums, conteos, identificadores, decisiones aprobadas y anomalias conservadas. NO contiene datos de negocio ni contrasenas; los datos viven en data/.",
+  "generado": "2026-09-24T17:00:05.429Z",
+  "etapa": "Migracion de archivos legacy -> proyecto nuevo (previa a MySQL/MariaDB)",
+  "origen_legacy": "C:Users\bg117Downloadsmetricosmetricos",
+  "destino": "C:Users\bg117OneDriveDocumentosmetricas-koide-mantenimiento",
+  "nota_fin_de_linea": "Los archivos marcados 'mismo_contenido_difiere_fin_de_linea' solo difieren en CRLF (git core.autocrlf=true). El contenido JSON es identico.",
+  "archivos": [
+    {
+      "ruta": "data/Bono semanal mantenimiento.xlsx",
+      "bytes": 28984,
+      "sha256_legacy": "6d695799a37a7f76d5de3e89fe6ef72834adb622b02cb157c1e70fc58800e5f4",
+      "sha256_nuevo": "6d695799a37a7f76d5de3e89fe6ef72834adb622b02cb157c1e70fc58800e5f4",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/bonos.json",
+      "bytes": 45571,
+      "sha256_legacy": "8a3081c7ccd7194e72c1b79b8db6c6cfc3786e4102181e59c2243a5055d7a9c5",
+      "sha256_nuevo": "94882d0511a3d01cbd42d673cd5b5fe2cc514a605acbda13d2b908655bd1b8a4",
+      "estado": "mismo_contenido_difiere_fin_de_linea"
+    },
+    {
+      "ruta": "data/calendarios.json",
+      "bytes": 2,
+      "sha256_legacy": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sha256_nuevo": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/calendarios/BICELADORAS KMD-MA01 CALENDARIO DE MANTENIMIENTOS PREVENTIVOS.xls",
+      "bytes": 537088,
+      "sha256_legacy": "3a5316f94130dc0d54f932bc027d665d9d2040ccbe4415adab95fd41bc3dd4f7",
+      "sha256_nuevo": "3a5316f94130dc0d54f932bc027d665d9d2040ccbe4415adab95fd41bc3dd4f7",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/calendarios/CAL-MTTO-EQUIPOS DE PLANTA GRUAS VIAJERAS RAMPAS CORTINAS.xls",
+      "bytes": 162304,
+      "sha256_legacy": "43c543441046a5af606ca0f258570a1b908e7396f3745cdcf96cc8198de7171b",
+      "sha256_nuevo": "43c543441046a5af606ca0f258570a1b908e7396f3745cdcf96cc8198de7171b",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/calendarios/CALENDARIO DE MANTENIMIENTOS PREVENTIVOS CORTADORAS.xlsx",
+      "bytes": 132008,
+      "sha256_legacy": "4b914aa5fc40f676e34049b128e87b832fb3427bb957bcf7f029e7c74666dafa",
+      "sha256_nuevo": "4b914aa5fc40f676e34049b128e87b832fb3427bb957bcf7f029e7c74666dafa",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/calendarios/KMD-MA01 CALENDARIO DE MANTENIMIENTOS PREVENTIVOS DE PRENSAS.xls",
+      "bytes": 284672,
+      "sha256_legacy": "bfa870435ce9d499dbcf9f3ca2dd730af59b7f24edc0cc5db4a9b2bd8107bb7b",
+      "sha256_nuevo": "bfa870435ce9d499dbcf9f3ca2dd730af59b7f24edc0cc5db4a9b2bd8107bb7b",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/calendarios/KMD-MA01 CALENDARIO DE MANTENIMIENTOS PREVENTIVOS DECNC.xls",
+      "bytes": 276480,
+      "sha256_legacy": "6939d46741aa7759dd45330489630c923c0d884bf002e5c24a6531934944b6e3",
+      "sha256_nuevo": "6939d46741aa7759dd45330489630c923c0d884bf002e5c24a6531934944b6e3",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/calendarios/KMD-MA02 CALENDARIO DE MANTENIMIENTOS PREDICTIVOS_.xls",
+      "bytes": 618496,
+      "sha256_legacy": "5ac028678b0613ff2700c67a8750404adc15de42b4e3c67bf654ee7576e100ef",
+      "sha256_nuevo": "5ac028678b0613ff2700c67a8750404adc15de42b4e3c67bf654ee7576e100ef",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/contramedidas-fotos/mt07hwfck0ns2/foto_mt07wegj_rr8.png",
+      "bytes": 319815,
+      "sha256_legacy": "1ad78100e1668e1eb907a5cf9cabf57d749d232d2df801f6d911aa381da5596b",
+      "sha256_nuevo": "1ad78100e1668e1eb907a5cf9cabf57d749d232d2df801f6d911aa381da5596b",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/contramedidas.json",
+      "bytes": 1856,
+      "sha256_legacy": "59e5aa933f1a3fad8fc407135d9e45ea3aa7993309c39432ef71d66afebf76ac",
+      "sha256_nuevo": "1d122be08da335b473fff7a70963d24f91a70868386ace62dda3a55ca0df3996",
+      "estado": "mismo_contenido_difiere_fin_de_linea"
+    },
+    {
+      "ruta": "data/entregas.json",
+      "bytes": 144240,
+      "sha256_legacy": "cc4f78b9cc843b888267ba02d03950db92df99f2a25323b357aa8ab723a64581",
+      "sha256_nuevo": "cc4f78b9cc843b888267ba02d03950db92df99f2a25323b357aa8ab723a64581",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/gastos.json",
+      "bytes": 1046444,
+      "sha256_legacy": "9713043a8f0d7b6bab1c27d35b00b35047f1bda3af8e02db48e40e10db1e9982",
+      "sha256_nuevo": "9713043a8f0d7b6bab1c27d35b00b35047f1bda3af8e02db48e40e10db1e9982",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/server-err.log",
+      "bytes": 0,
+      "sha256_legacy": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256_nuevo": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/server-out.log",
+      "bytes": 734,
+      "sha256_legacy": "82fd7e1a1347b106b916903c670c0884cf5a06071bae0aff3ece8ee356dffb1a",
+      "sha256_nuevo": "a5929aadaa4ec7dcad851f9d94b9d9f83584b910322ace6f3be3dd90c1a4dbb5",
+      "estado": "mismo_contenido_difiere_fin_de_linea"
+    },
+    {
+      "ruta": "data/server.log",
+      "bytes": 400,
+      "sha256_legacy": "6b9b175551d20834642eb8fb9047a5d749e43456bb416ff0380e841e691c9068",
+      "sha256_nuevo": "bfb206a3635adaff21564fb20c94868e02aaebb724f95bda79cac4c77e9b399d",
+      "estado": "mismo_contenido_difiere_fin_de_linea"
+    },
+    {
+      "ruta": "data/template-bonos.xlsx",
+      "bytes": 28984,
+      "sha256_legacy": "6d695799a37a7f76d5de3e89fe6ef72834adb622b02cb157c1e70fc58800e5f4",
+      "sha256_nuevo": "6d695799a37a7f76d5de3e89fe6ef72834adb622b02cb157c1e70fc58800e5f4",
+      "estado": "identico"
+    },
+    {
+      "ruta": "data/tiempo-muerto.json",
+      "bytes": 2276399,
+      "sha256_legacy": "5f9a5affbd9529ca0d8a4e136e13d2934d9092f5af0b376723ac64b4d6cae0e0",
+      "sha256_nuevo": "5f9a5affbd9529ca0d8a4e136e13d2934d9092f5af0b376723ac64b4d6cae0e0",
+      "estado": "identico"
+    }
+  ],
+  "conteos_origen": {
+    "tiempo_muerto_registros": 1967,
+    "maquinas": 52,
+    "gastos": 1563,
+    "entregas": 403,
+    "contramedidas": 5,
+    "contramedida_fotos": 1,
+    "bonos_plantillas": 1,
+    "bonos_semanas_en_archivo": 6,
+    "bonos_semanas_a_migrar": 5,
+    "calendarios_registrados": 0,
+    "calendarios_archivos_no_registrados": 6,
+    "documentos_archivos": 0
+  },
+  "identificadores": {
+    "tiempo_muerto": {
+      "min": 3,
+      "max": 4528,
+      "unicos": 1967,
+      "snapshot_updatedAt": "2026-09-23T18:29:41.832Z",
+      "area": "Mantenimiento"
+    },
+    "maquinas_ids": [
+      6,
+      7,
+      8,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      9,
+      10,
+      11,
+      12,
+      49,
+      50,
+      1,
+      2,
+      3,
+      4,
+      5,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      51,
+      52,
+      13,
+      14,
+      15,
+      47,
+      48
+    ],
+    "contramedidas_ids": [
+      "mt07hwfck0ns2",
+      "mt0bt0msbwvzx",
+      "mt0by2nyjl0jd",
+      "mt0c8wbgfjroy",
+      "mtc0lh8aewew5"
+    ],
+    "bonos_semanas_claves": [
+      "2026-W28",
+      "2026-W32",
+      "2026-W29",
+      "2026-W31",
+      "2026-W37",
+      "2026-W34"
+    ]
+  },
+  "decisiones_aprobadas": {
+    "fecha_aprobacion": "2026-09-24",
+    "exclusiones": [
+      {
+        "fuente": "data/bonos.json",
+        "ruta": "weeks[\"2026-W37\"]",
+        "accion": "NO_MIGRAR",
+        "motivo": "Semana completamente vacia creada automaticamente por buscarBono() (autoguardado) el 2026-08-10, antes de ocurrir la semana.",
+        "nota": "El registro permanece en data/bonos.json (copia identica al legacy, no se modifica). La exclusion debe aplicarse en la importacion a la base de datos."
+      }
+    ],
+    "marcas": [
+      {
+        "fuente": "data/bonos.json",
+        "celda": "R13",
+        "valor": "suspensión 06 y 07 de agosto 2026",
+        "marca": "heredado_de_plantilla",
+        "semanas": [
+          "2026-W28",
+          "2026-W32",
+          "2026-W29",
+          "2026-W31",
+          "2026-W34"
+        ],
+        "accion": "MIGRAR_TAL_CUAL",
+        "motivo": "La celda editable muestra el texto de la plantilla (datos de la semana 32) y se guarda en cada semana; no es captura especifica de cada semana.",
+        "observacion": "En 2026-W32 (03-09 ago 2026) las fechas de la suspension coinciden con la semana: REQUIERE VALIDACION si en esa semana es dato propio."
+      }
+    ],
+    "calendarios_no_registrados": {
+      "accion": "CONSERVAR_ARCHIVOS_SIN_REGISTRAR",
+      "motivo": "Archivos presentes en data/calendarios/ pero no registrados en calendarios.json (el servidor solo reconoce calendarios/<id>.xlsx registrados). No se marcan como activos.",
+      "archivos": [
+        {
+          "ruta": "data/calendarios/BICELADORAS KMD-MA01 CALENDARIO DE MANTENIMIENTOS PREVENTIVOS.xls",
+          "bytes": 537088,
+          "sha256": "3a5316f94130dc0d54f932bc027d665d9d2040ccbe4415adab95fd41bc3dd4f7",
+          "registrado_en_calendarios_json": false,
+          "estado": "historico_no_registrado_pendiente_de_validacion"
+        },
+        {
+          "ruta": "data/calendarios/CAL-MTTO-EQUIPOS DE PLANTA GRUAS VIAJERAS RAMPAS CORTINAS.xls",
+          "bytes": 162304,
+          "sha256": "43c543441046a5af606ca0f258570a1b908e7396f3745cdcf96cc8198de7171b",
+          "registrado_en_calendarios_json": false,
+          "estado": "historico_no_registrado_pendiente_de_validacion"
+        },
+        {
+          "ruta": "data/calendarios/CALENDARIO DE MANTENIMIENTOS PREVENTIVOS CORTADORAS.xlsx",
+          "bytes": 132008,
+          "sha256": "4b914aa5fc40f676e34049b128e87b832fb3427bb957bcf7f029e7c74666dafa",
+          "registrado_en_calendarios_json": false,
+          "estado": "historico_no_registrado_pendiente_de_validacion"
+        },
+        {
+          "ruta": "data/calendarios/KMD-MA01 CALENDARIO DE MANTENIMIENTOS PREVENTIVOS DE PRENSAS.xls",
+          "bytes": 284672,
+          "sha256": "bfa870435ce9d499dbcf9f3ca2dd730af59b7f24edc0cc5db4a9b2bd8107bb7b",
+          "registrado_en_calendarios_json": false,
+          "estado": "historico_no_registrado_pendiente_de_validacion"
+        },
+        {
+          "ruta": "data/calendarios/KMD-MA01 CALENDARIO DE MANTENIMIENTOS PREVENTIVOS DECNC.xls",
+          "bytes": 276480,
+          "sha256": "6939d46741aa7759dd45330489630c923c0d884bf002e5c24a6531934944b6e3",
+          "registrado_en_calendarios_json": false,
+          "estado": "historico_no_registrado_pendiente_de_validacion"
+        },
+        {
+          "ruta": "data/calendarios/KMD-MA02 CALENDARIO DE MANTENIMIENTOS PREDICTIVOS_.xls",
+          "bytes": 618496,
+          "sha256": "5ac028678b0613ff2700c67a8750404adc15de42b4e3c67bf654ee7576e100ef",
+          "registrado_en_calendarios_json": false,
+          "estado": "historico_no_registrado_pendiente_de_validacion"
+        }
+      ]
+    },
+    "datos_koide": {
+      "accion": "MIGRAR_TAL_CUAL",
+      "no_corregir": [
+        "numeros de empleado con texto libre",
+        "paros mayores a 24 h",
+        "duplicados logicos",
+        "nombres/textos (incluida codificacion defectuosa)"
+      ]
+    },
+    "reglas_negocio_conservadas": [
+      {
+        "regla": "MTBF",
+        "valor": "22 horas por dia x dias del mes sin domingos (public/app.js horasOperacionRows)",
+        "nota": "El catalogo KOIDE trae effective_hours_per_day=21.6; no se usa."
+      },
+      {
+        "regla": "Bono nivel A",
+        "valor": "indice >= 90 (config.json bonos.montos)",
+        "nota": "La plantilla impresa dice '>90%'; se conserva el criterio del codigo."
+      }
+    ]
+  },
+  "anomalias_conservadas": {
+    "tiempo_muerto": {
+      "empleado_texto_libre": {
+        "total": 22,
+        "detalle": [
+          {
+            "id": 4482,
+            "campo": "repair_started_by_employee_number",
+            "valor": "CARLOS FLORES"
+          },
+          {
+            "id": 4476,
+            "campo": "repair_started_by_employee_number",
+            "valor": "2000 Adrián"
+          },
+          {
+            "id": 4140,
+            "campo": "closed_by_employee_number",
+            "valor": "."
+          },
+          {
+            "id": 3878,
+            "campo": "closed_by_employee_number",
+            "valor": "Carlos Flores"
+          },
+          {
+            "id": 3633,
+            "campo": "repair_started_by_employee_number",
+            "valor": "carlos flores"
+          },
+          {
+            "id": 3631,
+            "campo": "repair_started_by_employee_number",
+            "valor": "carlos flores"
+          },
+          {
+            "id": 3629,
+            "campo": "repair_started_by_employee_number",
+            "valor": "adrian"
+          },
+          {
+            "id": 3502,
+            "campo": "repair_started_by_employee_number",
+            "valor": "adrian"
+          },
+          {
+            "id": 3497,
+            "campo": "repair_started_by_employee_number",
+            "valor": "adrian"
+          },
+          {
+            "id": 3236,
+            "campo": "repair_started_by_employee_number",
+            "valor": "70"
+          },
+          {
+            "id": 2775,
+            "campo": "closed_by_employee_number",
+            "valor": "Se ajustan opresores y flechas. Se hace engrasado general"
+          },
+          {
+            "id": 2300,
+            "campo": "closed_by_employee_number",
+            "valor": "20"
+          },
+          {
+            "id": 2208,
+            "campo": "repair_started_by_employee_number",
+            "valor": "13821"
+          },
+          {
+            "id": 2107,
+            "campo": "closed_by_employee_number",
+            "valor": "Guadalupe"
+          },
+          {
+            "id": 1443,
+            "campo": "closed_by_employee_number",
+            "valor": "197o"
+          },
+          {
+            "id": 1210,
+            "campo": "closed_by_employee_number",
+            "valor": "13821"
+          },
+          {
+            "id": 1135,
+            "campo": "closed_by_employee_number",
+            "valor": "138/2"
+          },
+          {
+            "id": 677,
+            "campo": "closed_by_employee_number",
+            "valor": "19765"
+          },
+          {
+            "id": 184,
+            "campo": "repair_started_by_employee_number",
+            "valor": "771,1377"
+          },
+          {
+            "id": 184,
+            "campo": "closed_by_employee_number",
+            "valor": "771,1377"
+          },
+          {
+            "id": 100,
+            "campo": "closed_by_employee_number",
+            "valor": "Adrián Villela"
+          },
+          {
+            "id": 29,
+            "campo": "closed_by_employee_number",
+            "valor": "ADMIN"
+          }
+        ]
+      },
+      "paros_mayores_24h": {
+        "total": 95,
+        "ids": [
+          4419,
+          4415,
+          4310,
+          4306,
+          4284,
+          4199,
+          3905,
+          3904,
+          3891,
+          3888,
+          3887,
+          3864,
+          3794,
+          3704,
+          3677,
+          3644,
+          3392,
+          3298,
+          3186,
+          3109,
+          3108,
+          3070,
+          2833,
+          2780,
+          2772,
+          2632,
+          2629,
+          2527,
+          2528,
+          2515,
+          2475,
+          2369,
+          2368,
+          2285,
+          2261,
+          2230,
+          2209,
+          2183,
+          2137,
+          2136,
+          2126,
+          2110,
+          2033,
+          1944,
+          1917,
+          1915,
+          1886,
+          1816,
+          1810,
+          1806,
+          1779,
+          1701,
+          1657,
+          1471,
+          1413,
+          1309,
+          1226,
+          1155,
+          1134,
+          1087,
+          1017,
+          920,
+          919,
+          918,
+          916,
+          880,
+          843,
+          752,
+          750,
+          726,
+          712,
+          666,
+          665,
+          663,
+          661,
+          659,
+          629,
+          628,
+          595,
+          254,
+          237,
+          193,
+          191,
+          155,
+          154,
+          86,
+          64,
+          62,
+          61,
+          57,
+          50,
+          49,
+          44,
+          25,
+          33
+        ]
+      },
+      "duplicados_logicos_maquina_inicio": [
+        [
+          1169,
+          1170
+        ]
+      ],
+      "registros_con_caracter_reemplazo_U_FFFD": {
+        "total": 311,
+        "ids": [
+          4526,
+          4524,
+          4491,
+          4489,
+          4486,
+          4480,
+          4475,
+          4476,
+          4474,
+          4468,
+          4469,
+          4433,
+          4431,
+          4420,
+          4414,
+          4407,
+          4406,
+          4402,
+          4401,
+          4398,
+          4377,
+          4340,
+          4339,
+          4335,
+          4328,
+          4326,
+          4324,
+          4316,
+          4284,
+          4282,
+          4272,
+          4270,
+          4251,
+          4216,
+          4201,
+          4198,
+          4196,
+          4195,
+          4185,
+          4182,
+          4140,
+          4135,
+          4128,
+          4123,
+          4117,
+          4110,
+          4080,
+          4072,
+          4070,
+          4005,
+          3990,
+          3895,
+          3889,
+          3877,
+          3847,
+          3827,
+          3783,
+          3744,
+          3677,
+          3637,
+          3625,
+          3612,
+          3606,
+          3542,
+          3529,
+          3518,
+          3508,
+          3498,
+          3440,
+          3437,
+          3325,
+          3316,
+          3288,
+          3263,
+          3249,
+          3246,
+          3204,
+          3161,
+          3143,
+          3067,
+          3003,
+          2976,
+          2924,
+          2880,
+          2866,
+          2723,
+          2715,
+          2629,
+          2613,
+          2543,
+          2515,
+          2488,
+          2441,
+          2434,
+          2376,
+          2373,
+          2360,
+          2343,
+          2342,
+          2337,
+          2333,
+          2314,
+          2227,
+          2199,
+          2190,
+          2166,
+          2164,
+          2133,
+          2131,
+          2120,
+          2099,
+          2098,
+          2097,
+          2087,
+          2080,
+          2037,
+          2004,
+          1998,
+          1973,
+          1959,
+          1944,
+          1894,
+          1845,
+          1816,
+          1810,
+          1770,
+          1768,
+          1748,
+          1719,
+          1718,
+          1687,
+          1684,
+          1648,
+          1645,
+          1600,
+          1627,
+          1621,
+          1560,
+          1559,
+          1602,
+          1601,
+          1594,
+          1590,
+          1589,
+          1585,
+          1579,
+          1556,
+          1555,
+          1547,
+          1542,
+          1540,
+          1538,
+          1531,
+          1530,
+          1475,
+          1505,
+          1504,
+          1495,
+          1494,
+          1492,
+          1490,
+          1468,
+          1463,
+          1460,
+          1457,
+          1437,
+          1387,
+          1409,
+          1395,
+          1392,
+          1391,
+          1388,
+          1373,
+          1372,
+          1362,
+          1360,
+          1335,
+          1332,
+          1331,
+          1318,
+          1305,
+          1296,
+          1291,
+          1279,
+          1266,
+          1265,
+          1259,
+          1234,
+          1222,
+          1214,
+          1213,
+          1180,
+          1169,
+          1168,
+          1117,
+          1152,
+          1141,
+          1125,
+          1124,
+          1122,
+          1103,
+          1102,
+          1098,
+          1094,
+          1070,
+          1064,
+          1063,
+          1059,
+          1030,
+          972,
+          988,
+          986,
+          985,
+          983,
+          960,
+          955,
+          915,
+          903,
+          918,
+          897,
+          896,
+          893,
+          831,
+          829,
+          826,
+          823,
+          862,
+          858,
+          856,
+          852,
+          841,
+          840,
+          839,
+          838,
+          837,
+          836,
+          814,
+          769,
+          722,
+          721,
+          717,
+          749,
+          726,
+          725,
+          694,
+          658,
+          623,
+          616,
+          615,
+          610,
+          609,
+          629,
+          628,
+          607,
+          606,
+          602,
+          599,
+          588,
+          587,
+          584,
+          570,
+          569,
+          556,
+          512,
+          544,
+          537,
+          533,
+          531,
+          500,
+          458,
+          455,
+          452,
+          422,
+          416,
+          411,
+          363,
+          358,
+          402,
+          388,
+          387,
+          351,
+          346,
+          341,
+          290,
+          324,
+          322,
+          321,
+          317,
+          313,
+          309,
+          308,
+          299,
+          296,
+          245,
+          275,
+          267,
+          221,
+          210,
+          207,
+          191,
+          174,
+          157,
+          153,
+          146,
+          125,
+          124,
+          118,
+          82,
+          68,
+          65,
+          50
+        ]
+      },
+      "registros_no_finalizados": [
+        26
+      ],
+      "record_date_fecha_local": "record_date es fecha local de operacion; puede diferir de la fecha UTC de downtime_start (no convertir)."
+    },
+    "gastos": {
+      "grupos_duplicados_exactos_por_indice": [
+        [
+          9,
+          10
+        ],
+        [
+          12,
+          13,
+          14,
+          15
+        ],
+        [
+          39,
+          41
+        ],
+        [
+          47,
+          48
+        ],
+        [
+          59,
+          61
+        ],
+        [
+          151,
+          153
+        ],
+        [
+          777,
+          792
+        ]
+      ],
+      "nota": "Sin id propio; posiciones (indice 0-based) dentro de gastos.json. Pueden ser partidas legitimas repetidas: REQUIERE VALIDACION."
+    },
+    "entregas": {
+      "grupos_duplicados_exactos_por_indice": [
+        [
+          345,
+          347
+        ]
+      ]
+    },
+    "contramedidas": {
+      "responsable_fuera_de_config": [
+        {
+          "id": "mtc0lh8aewew5",
+          "responsable": "JOSE CARLOS FLORES MENCHACA"
+        }
+      ],
+      "foto_sin_etiqueta_antes_despues": [
+        "mt07hwfck0ns2/foto_mt07wegj_rr8.png"
+      ],
+      "sin_fecha_de_completado": [
+        "mt07hwfck0ns2"
+      ],
+      "fecha_limite_anterior_a_creada": [
+        "mt07hwfck0ns2"
+      ]
+    },
+    "bonos": {
+      "formatos_fecha_mixtos": "2026-W28..W32 en m/d/yy; 2026-W34 en dd/mm/yyyy",
+      "encabezado_eficiencia_fijo": "D36/D38/N38/P38 siempre muestran la semana 32 de la plantilla",
+      "filas_eficiencia_vacias": [
+        "42",
+        "43"
+      ],
+      "celda_oculta": "L13:L19='A' bajo la combinacion J:M"
+    }
+  },
+  "no_migrado_deliberadamente": [
+    {
+      "recurso": "config.json -> koideLogin.password",
+      "motivo": "Contrasena; el proyecto nuevo usa .env (KOIDE_PASSWORD)."
+    },
+    {
+      "recurso": "scripts/extract_v4.py (version legacy) -> PASSWORD del Excel",
+      "motivo": "Contrasena; el nuevo usa GASTOS_EXCEL_PASSWORD en .env. La version legacy queda solo en la carpeta legacy."
+    }
+  ],
+  "pendientes_de_validacion": [
+    "Si la copia legacy en Downloads es la mas reciente (el legacy escribia gastos en C:metricosdata, carpeta inexistente en esta PC).",
+    "Semana 2026-W32: si R13 es dato propio de esa semana.",
+    "6 calendarios no registrados: si deben cargarse como calendarios activos.",
+    "Tipo antes/despues de la foto de mt07hwfck0ns2.",
+    "Paros > 24 h, empleados con texto libre y duplicado 1169/1170 (origen KOIDE)."
+  ]
+}
