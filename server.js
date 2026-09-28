@@ -9,8 +9,11 @@ const { loadEnvFile, env, resolvePath } = require("./lib/env");
 
 loadEnvFile();
 
+const crypto = require("crypto");
 const db = require("./lib/db");
 const store = require("./lib/store");
+const auth = require("./lib/auth");
+const atenciones = require("./lib/atenciones");
 
 const ROOT = __dirname;
 const PYTHON = env("PYTHON_PATH", process.platform === "win32" ? "python" : "python3");
@@ -65,11 +68,13 @@ function koideLogin() {
   };
 }
 
+// Sin respuesta de koide en este tiempo se usa la ultima copia guardada.
+const KOIDE_TIMEOUT_MS = Number(env("KOIDE_TIMEOUT_MS", "20000"));
+
 let token = null;
 let cache = null;
 let lastUpdate = null;
 let lastError = null;
-let updating = false;
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
@@ -77,6 +82,7 @@ function log(...args) {
 
 async function login() {
   const res = await fetch(`${API}/api/auth/login`, {
+    signal: AbortSignal.timeout(KOIDE_TIMEOUT_MS),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(koideLogin()),
@@ -92,6 +98,7 @@ async function login() {
 
 async function apiGet(url, retry = true) {
   const res = await fetch(`${API}${url}`, {
+    signal: AbortSignal.timeout(KOIDE_TIMEOUT_MS),
     headers: { "X-Auth-Token": token || "" },
   });
   if (res.status === 401 && retry) {
@@ -102,9 +109,14 @@ async function apiGet(url, retry = true) {
   return res.json();
 }
 
-async function refresh() {
-  if (updating) return cache;
-  updating = true;
+// Las llamadas simultaneas esperan la misma sincronizacion en curso.
+let refreshing = null;
+function refresh() {
+  if (!refreshing) refreshing = doRefresh().finally(() => (refreshing = null));
+  return refreshing;
+}
+
+async function doRefresh() {
   try {
     if (!token) await login();
     const [records, machines] = await Promise.all([
@@ -130,8 +142,6 @@ async function refresh() {
   } catch (err) {
     lastError = err.message || String(err);
     log("[update] ERROR:", lastError);
-  } finally {
-    updating = false;
   }
   return cache;
 }
@@ -176,11 +186,17 @@ function scheduleDaily() {
   schedule();
 }
 
-function serveStatic(req, res) {
-  let urlPath = decodeURIComponent(req.url.split("?")[0]);
-  if (urlPath === "/") urlPath = "/index.html";
+function serveStatic(req, res, urlPath) {
+  if (!urlPath) {
+    try {
+      urlPath = decodeURIComponent(req.url.split("?")[0]);
+    } catch {
+      urlPath = "/";
+    }
+    if (urlPath === "/") urlPath = "/index.html";
+  }
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  if (!filePath.startsWith(PUBLIC_DIR + path.sep)) {
     res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Prohibido");
     return;
@@ -191,7 +207,11 @@ function serveStatic(req, res) {
       res.end("No encontrado");
       return;
     }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream" });
+    const ext = path.extname(filePath).toLowerCase();
+    const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
+    // Las paginas dependen de la sesion: que el navegador no las guarde en cache.
+    if (ext === ".html") headers["Cache-Control"] = "no-store";
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
@@ -201,20 +221,30 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// Si el cuerpo excede maxBytes se descarta y se resuelve {} (antes la peticion
+// quedaba colgada); los manejadores responden 400 como con un cuerpo vacio.
 function readBody(req, maxBytes = 1e6) {
   return new Promise((resolve) => {
     let data = "";
+    let tooLarge = false;
     req.on("data", (chunk) => {
+      if (tooLarge) return;
       data += chunk;
-      if (data.length > maxBytes) req.destroy();
+      if (data.length > maxBytes) {
+        tooLarge = true;
+        data = "";
+        log(`[http] Cuerpo mayor a ${maxBytes} bytes descartado en ${req.url}`);
+      }
     });
     req.on("end", () => {
+      if (tooLarge) return resolve({});
       try {
         resolve(data ? JSON.parse(data) : {});
       } catch {
         resolve({});
       }
     });
+    req.on("error", () => resolve({}));
   });
 }
 
@@ -660,49 +690,268 @@ async function handleApi(req, res, url) {
   return false;
 }
 
+/* ---------- Autenticacion, roles y operador de mantenimiento ---------- */
+
+const { ADMIN, OP } = auth.ROLES;
+const HOME = { [ADMIN]: "/", [OP]: "/operador-mantenimiento" };
+
+// Archivos que se sirven sin sesion (pantalla de login y recursos comunes).
+const PUBLIC_FILES = new Set(["/login.html", "/login.js", "/acceso.css", "/styles.css", "/favicon.ico"]);
+// Archivos para cualquier usuario con sesion.
+const SESSION_FILES = new Set(["/sesion.js", "/vendor/chart.umd.min.js"]);
+// Pantalla del operador (mantenimiento_op y mantenimiento_admin).
+const OP_FILES = new Set(["/operador.html", "/operador.js"]);
+
+function staticPath(req) {
+  let p;
+  try {
+    p = decodeURIComponent(req.url.split("?")[0]);
+  } catch {
+    return null;
+  }
+  p = path.posix.normalize(p.replace(/\\/g, "/"));
+  if (p === "/login") return "/login.html";
+  if (p === "/operador-mantenimiento" || p.startsWith("/operador-mantenimiento/")) return "/operador.html";
+  if (p === "/") return "/index.html";
+  return p;
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, "Cache-Control": "no-store" });
+  res.end();
+}
+
+function clientIp(req) {
+  return req.socket.remoteAddress || "";
+}
+
+// Consulta de reportes del operador: si el codigo no esta en la copia local
+// (paro recien creado) se resincroniza con koide, como maximo una vez cada
+// KOIDE_LOOKUP_MIN_MS (5 s por defecto) para no saturar la API.
+const LOOKUP_MIN_MS = Number(env("KOIDE_LOOKUP_MIN_MS", "5000"));
+let lastLookupRefresh = 0;
+async function buscarReporte(codigo) {
+  const find = () => (cache ? cache.records.find((r) => String(r.id) === codigo) : null);
+  let rec = find();
+  let aviso = null;
+  if (!rec && refreshing) {
+    await refreshing;
+    rec = find();
+  }
+  if (!rec && Date.now() - lastLookupRefresh >= LOOKUP_MIN_MS) {
+    lastLookupRefresh = Date.now();
+    await refresh();
+    rec = find();
+  }
+  if (lastError) {
+    aviso = `No se pudo consultar el sistema de captura; se usa la copia del ${cache ? new Date(cache.updatedAt).toLocaleString("es-MX") : "—"}`;
+  }
+  return rec ? { record: rec, aviso } : null;
+}
+
+async function handleAuth(req, res, url, user) {
+  if (url === "/api/auth/login" && req.method === "POST") {
+    const body = await readBody(req, 10e3);
+    const r = await auth.login(body.username, body.password, { ip: clientIp(req), userAgent: req.headers["user-agent"] });
+    if (!r.user) {
+      const headers = { "Content-Type": "application/json; charset=utf-8" };
+      if (r.retryAfter) headers["Retry-After"] = String(r.retryAfter);
+      res.writeHead(r.status, headers);
+      res.end(JSON.stringify({ error: r.error }));
+      return true;
+    }
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Set-Cookie": auth.sessionCookie(r.token, r.expira), "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ user: r.user, redirect: HOME[r.user.rol] || "/login", expira: r.expira.toISOString() }));
+    log(`[auth] Sesion iniciada: ${r.user.username} (${r.user.rol})`);
+    return true;
+  }
+  if (url === "/api/auth/logout" && req.method === "POST") {
+    await auth.logout(auth.tokenFromReq(req));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Set-Cookie": auth.clearCookie() });
+    res.end(JSON.stringify({ ok: true }));
+    return true;
+  }
+  if (url === "/api/auth/me" && req.method === "GET") {
+    if (!user) return sendJson(res, 401, { error: "Sesion no iniciada" }), true;
+    sendJson(res, 200, { user, home: HOME[user.rol] });
+    return true;
+  }
+  return false;
+}
+
+function sendError(res, err) {
+  if (err instanceof atenciones.AtencionError) return sendJson(res, err.status, { error: err.message, ...err.extra });
+  throw err;
+}
+
+async function handleOperador(req, res, url, user) {
+  try {
+    if (url === "/api/operador/atenciones" && req.method === "GET") {
+      return sendJson(res, 200, await atenciones.misAtenciones(user));
+    }
+    let m = url.match(/^\/api\/operador\/reportes\/([^/]+)$/);
+    if (m && req.method === "GET") {
+      return sendJson(res, 200, await atenciones.consultar(decodeURIComponent(m[1]), user, buscarReporte));
+    }
+    m = url.match(/^\/api\/operador\/reportes\/([^/]+)\/aceptar$/);
+    if (m && req.method === "POST") {
+      const a = await atenciones.aceptar(decodeURIComponent(m[1]), user, buscarReporte);
+      log(`[operador] Reporte ${a.codigoReporte} aceptado por ${user.username}`);
+      return sendJson(res, 200, a);
+    }
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)$/);
+    if (m && req.method === "GET") return sendJson(res, 200, await atenciones.obtener(m[1], user));
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/finalizar$/);
+    if (m && req.method === "POST") {
+      const body = await readBody(req, 15e6);
+      const a = await atenciones.finalizar(m[1], user, body, DATA_DIR);
+      log(`[operador] Reporte ${a.codigoReporte} finalizado por ${user.username}; cierre ${a.codigoCierre}`);
+      return sendJson(res, 200, a);
+    }
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/fotos\/([^/]+)$/);
+    if (m && req.method === "GET") {
+      let nombre;
+      try {
+        nombre = decodeURIComponent(m[2]);
+      } catch {
+        return sendJson(res, 400, { error: "Nombre invalido" });
+      }
+      const fp = await atenciones.fotoDe(m[1], nombre, user, DATA_DIR);
+      if (!fp) return sendJson(res, 404, { error: "Foto no encontrada" });
+      res.writeHead(200, { "Content-Type": fp.endsWith(".png") ? "image/png" : "image/jpeg", "Cache-Control": "private, max-age=86400" });
+      return res.end(fs.readFileSync(fp));
+    }
+    sendJson(res, 404, { error: "No encontrado" });
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+function terminalKeyOk(req) {
+  const expected = env("TERMINAL_API_KEY", "");
+  const got = String(req.headers["x-terminal-key"] || "");
+  if (!expected || !got) return false;
+  const a = crypto.createHash("sha256").update(expected).digest();
+  const b = crypto.createHash("sha256").update(got).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+async function handleTerminal(req, res, url) {
+  if (!env("TERMINAL_API_KEY", "")) return sendJson(res, 503, { error: "Integracion con la terminal no configurada (TERMINAL_API_KEY)" });
+  if (!terminalKeyOk(req)) return sendJson(res, 401, { error: "Clave de terminal invalida" });
+  if (url === "/api/terminal/cierres/validar" && req.method === "POST") {
+    const body = await readBody(req, 10e3);
+    try {
+      const r = await atenciones.validarCierre(body.codigoCierre, { terminal: body.terminal, codigoReporte: body.codigoReporte });
+      if (!r.yaConfirmado) log(`[terminal] Cierre ${r.codigoCierre} validado (reporte ${r.codigoReporte}, terminal ${body.terminal || "?"})`);
+      return sendJson(res, 200, r);
+    } catch (err) {
+      return sendError(res, err);
+    }
+  }
+  sendJson(res, 404, { error: "No encontrado" });
+}
+
+async function handleApp(req, res, url) {
+  if (url === "/api/data") {
+    if (!cache) await refresh();
+    if (!cache) return sendJson(res, 502, { error: "Aun no hay datos disponibles" });
+    return sendJson(res, 200, {
+      updatedAt: cache.updatedAt,
+      area: cache.area,
+      source: cache.source,
+      lastError,
+      count: cache.records.length,
+      records: cache.records,
+      machines: cache.machines || [],
+      technicians: config.maintenanceTechnicians || [],
+      performance: config.performance || null,
+      bonos: config.bonos || null,
+      calendarios: config.calendarios || null,
+    });
+  }
+  if (url === "/api/refresh") {
+    await refresh();
+    if (!cache) return sendJson(res, 502, { error: "No se pudo actualizar" });
+    return sendJson(res, 200, {
+      updatedAt: cache.updatedAt,
+      source: cache.source,
+      lastError,
+      count: cache.records.length,
+    });
+  }
+  const handled = await handleApi(req, res, url);
+  if (!handled) sendJson(res, 404, { error: "No encontrado" });
+}
+
+async function handleHealth(res) {
+  let dbOk = true;
+  try {
+    await db.query("SELECT 1");
+  } catch {
+    dbOk = false;
+  }
+  return sendJson(res, dbOk ? 200 : 503, {
+    ok: dbOk,
+    db: dbOk,
+    updatedAt: lastUpdate ? lastUpdate.toISOString() : null,
+    lastError,
+    nextUpdate: nextRunDate().toISOString(),
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = req.url.split("?")[0];
   try {
-    if (url === "/api/data") {
-      if (!cache) await refresh();
-      if (!cache) return sendJson(res, 502, { error: "Aun no hay datos disponibles" });
-      return sendJson(res, 200, {
-        updatedAt: cache.updatedAt,
-        area: cache.area,
-        source: cache.source,
-        lastError,
-        count: cache.records.length,
-        records: cache.records,
-        machines: cache.machines || [],
-        technicians: config.maintenanceTechnicians || [],
-        performance: config.performance || null,
-        bonos: config.bonos || null,
-        calendarios: config.calendarios || null,
-      });
+    if (url === "/api/health") return await handleHealth(res);
+    if (url.startsWith("/api/terminal/")) return await handleTerminal(req, res, url);
+
+    const isApi = url.startsWith("/api/");
+    const file = isApi ? null : staticPath(req);
+    if (!isApi && file !== null && PUBLIC_FILES.has(file)) return serveStatic(req, res, file);
+    if (!isApi && file !== null && file.startsWith("/assets/")) return serveStatic(req, res, file);
+
+    const user = await auth.sessionUser(auth.tokenFromReq(req));
+    if (url.startsWith("/api/auth/")) {
+      if (await handleAuth(req, res, url, user)) return;
+      return sendJson(res, 404, { error: "No encontrado" });
     }
-    if (url === "/api/refresh") {
-      await refresh();
-      if (!cache) return sendJson(res, 502, { error: "No se pudo actualizar" });
-      return sendJson(res, 200, {
-        updatedAt: cache.updatedAt,
-        source: cache.source,
-        lastError,
-        count: cache.records.length,
-      });
+    if (!user) {
+      if (isApi) return sendJson(res, 401, { error: "Sesion no iniciada o expirada" });
+      return redirect(res, "/login");
     }
-    if (url === "/api/health") {
-      return sendJson(res, 200, {
-        ok: true,
-        updatedAt: lastUpdate ? lastUpdate.toISOString() : null,
-        lastError,
-        nextUpdate: nextRunDate().toISOString(),
-      });
+
+    if (isApi) {
+      if (url.startsWith("/api/operador/")) {
+        if (user.rol !== OP && user.rol !== ADMIN) return sendJson(res, 403, { error: "Sin permiso" });
+        return await handleOperador(req, res, url, user);
+      }
+      // Todo lo demas es el dashboard administrativo (funcionalidad existente).
+      if (user.rol !== ADMIN) return sendJson(res, 403, { error: "Sin permiso" });
+      return await handleApp(req, res, url);
     }
-    const cmHandled = await handleApi(req, res, url);
-    if (cmHandled) return;
-    serveStatic(req, res);  } catch (err) {
+
+    if (file === null) return sendJson(res, 400, { error: "Ruta invalida" });
+    if (SESSION_FILES.has(file)) return serveStatic(req, res, file);
+    if (OP_FILES.has(file)) {
+      if (user.rol !== OP && user.rol !== ADMIN) return redirect(res, HOME[user.rol] || "/login");
+      return serveStatic(req, res, file);
+    }
+    if (user.rol !== ADMIN) {
+      if (file === "/index.html") return redirect(res, HOME[user.rol] || "/login");
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Sin permiso");
+    }
+    serveStatic(req, res, file);
+  } catch (err) {
+    if (db.isConnectionError(err)) {
+      console.error("[http] Base de datos no disponible:", err.code || err.message);
+      if (!res.headersSent) return sendJson(res, 503, { error: "Base de datos no disponible. Intente de nuevo en unos momentos." });
+      return res.end();
+    }
     console.error("[http] ERROR:", err);
-    sendJson(res, 500, { error: "Error interno" });
+    if (!res.headersSent) sendJson(res, 500, { error: "Error interno" });
+    else res.end();
   }
 });
 
@@ -711,6 +960,14 @@ const host = env("HOST", undefined); // sin HOST escucha en todas las interfaces
 
 async function start() {
   await db.waitForDb({ log });
+  const conn = await db.getPool().getConnection();
+  try {
+    await db.applyMigrations(conn, { log });
+  } finally {
+    conn.release();
+  }
+  const [{ n }] = await db.query("SELECT COUNT(*) AS n FROM usuarios WHERE activo = 1");
+  if (!Number(n)) log("[auth] AVISO: no hay usuarios activos. Cree uno con: node scripts/usuarios.js crear <usuario> mantenimiento_admin \"<nombre>\"");
   await loadCache();
   server.listen(port, host, () => {
     log(`Metricos de Mantenimiento en http://${host || "localhost"}:${port}`);

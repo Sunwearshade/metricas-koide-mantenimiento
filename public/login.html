@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Iniciar sesión — Métricas de Mantenimiento</title>
+  <link rel="stylesheet" href="/acceso.css" />
+</head>
+<body>
+  <header class="acc-top">
+    <div class="acc-brand">
+      <img src="/assets/koide-logo-cropped.png" alt="Koide México" />
+      <div>
+        <h1>Métricas de Mantenimiento</h1>
+        <p>Área de Mantenimiento</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="acc-main">
+    <form class="acc-card" id="form-login" autocomplete="on" novalidate>
+      <h2 class="acc-title">Iniciar sesión</h2>
+      <p class="acc-sub">Ingresa tu usuario y contraseña</p>
+      <p class="acc-msg error" id="login-error" role="alert" hidden></p>
+      <label class="acc-field">
+        <span>Usuario</span>
+        <input type="text" id="login-usuario" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+      </label>
+      <label class="acc-field">
+        <span>Contraseña</span>
+        <input type="password" id="login-password" name="password" autocomplete="current-password" required />
+      </label>
+      <button class="acc-btn" id="login-btn" type="submit">ENTRAR</button>
+    </form>
+  </main>
+
+  <script src="/login.js"></script>
+</body>
+</html>

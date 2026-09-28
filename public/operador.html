@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Operador de Mantenimiento</title>
+  <link rel="stylesheet" href="/acceso.css" />
+</head>
+<body>
+  <header class="acc-top">
+    <div class="acc-brand">
+      <img src="/assets/koide-logo-cropped.png" alt="Koide México" />
+      <div>
+        <h1>Operador de Mantenimiento</h1>
+        <p>Atención de paros</p>
+      </div>
+    </div>
+    <div class="acc-user">
+      <span id="op-usuario">—</span>
+      <button class="acc-link" id="op-dashboard" type="button" hidden>Dashboard</button>
+      <button class="acc-link" id="op-logout" type="button">Cerrar sesión</button>
+    </div>
+  </header>
+
+  <main class="acc-main">
+    <div class="acc-col">
+      <p class="acc-msg error" id="op-error" role="alert" hidden></p>
+
+      <!-- 1. Codigo del reporte -->
+      <section id="paso-codigo">
+        <form class="acc-card" id="form-codigo" novalidate>
+          <h2 class="acc-title">Operador de mantenimiento</h2>
+          <p class="acc-sub">Ingresa código del reporte</p>
+          <label class="acc-field">
+            <span class="sr-only" hidden>Código del reporte</span>
+            <input type="text" id="op-codigo" class="acc-code" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="12" required />
+          </label>
+          <button class="acc-btn" id="op-buscar" type="submit">ACEPTAR</button>
+        </form>
+
+        <div class="acc-card" id="op-abiertas-card" hidden>
+          <h3 class="acc-h2">Atenciones en curso</h3>
+          <ul class="acc-list" id="op-abiertas"></ul>
+        </div>
+        <div class="acc-card" id="op-recientes-card" hidden>
+          <h3 class="acc-h2">Últimos reportes finalizados</h3>
+          <ul class="acc-list" id="op-recientes"></ul>
+        </div>
+      </section>
+
+      <!-- 2. Confirmar reporte -->
+      <section class="acc-card" id="paso-confirmar" hidden>
+        <h2 class="acc-title">Confirmar reporte</h2>
+        <p class="acc-sub">Verifica que sea el paro correcto</p>
+        <p class="acc-msg warn" id="conf-aviso" hidden></p>
+        <dl class="acc-dl" id="conf-datos"></dl>
+        <p class="acc-msg error" id="conf-motivo" hidden></p>
+        <div class="acc-btn-row">
+          <button class="acc-btn ghost" id="conf-cancelar" type="button">Cancelar</button>
+          <button class="acc-btn ok" id="conf-aceptar" type="button">ACEPTAR PARO</button>
+        </div>
+      </section>
+
+      <!-- 3. Atencion -->
+      <section id="paso-atender" hidden>
+        <div class="acc-card">
+          <h2 class="acc-title">Atención del paro</h2>
+          <p class="acc-sub" id="at-sub"></p>
+          <dl class="acc-dl" id="at-datos"></dl>
+        </div>
+        <form class="acc-card" id="form-finalizar" novalidate>
+          <h3 class="acc-h2">Captura del trabajo</h3>
+          <label class="acc-field">
+            <span>Trabajo realizado *</span>
+            <textarea id="at-trabajo" maxlength="5000" placeholder="Describe el trabajo realizado" required></textarea>
+          </label>
+          <label class="acc-field">
+            <span>Comentarios</span>
+            <textarea id="at-comentarios" maxlength="5000" placeholder="Opcional"></textarea>
+          </label>
+          <h3 class="acc-h2">Evidencia (JPG o PNG, máx. 5 MB)</h3>
+          <div class="acc-fotos">
+            <div class="acc-foto">
+              Foto antes
+              <input type="file" id="at-foto-antes" accept="image/jpeg,image/png" />
+              <img id="at-prev-antes" alt="" hidden />
+            </div>
+            <div class="acc-foto">
+              Foto después
+              <input type="file" id="at-foto-despues" accept="image/jpeg,image/png" />
+              <img id="at-prev-despues" alt="" hidden />
+            </div>
+          </div>
+          <button class="acc-btn ok" id="at-finalizar" type="submit">COMPLETAR REPORTE</button>
+          <div class="acc-btn-row">
+            <button class="acc-btn ghost" id="at-volver" type="button">Volver (la atención queda en curso)</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- 4. Codigo de cierre -->
+      <section id="paso-cierre" hidden>
+        <div class="acc-card">
+          <h2 class="acc-title">Reporte completado</h2>
+          <p class="acc-sub">Código de cierre: captúralo en la terminal de producción</p>
+          <div class="acc-cierre" id="cierre-codigo">—</div>
+          <dl class="acc-dl" id="cierre-datos"></dl>
+          <button class="acc-btn" id="cierre-otro" type="button">ATENDER OTRO REPORTE</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/operador.js"></script>
+</body>
+</html>

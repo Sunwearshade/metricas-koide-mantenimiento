@@ -3,7 +3,10 @@
 Guía para instalar la aplicación **desde cero** en un Windows Server de la red
 interna, con MySQL 8, Node.js y Python 3.12, como **servicio de Windows**.
 Al terminar, los usuarios solo tienen que abrir `http://<servidor>:4173/` desde
-cualquier equipo de la planta.
+cualquier equipo de la planta e **iniciar sesión**.
+
+> Desarrollo local con XAMPP (MariaDB), usuarios/roles, pantalla del operador de
+> mantenimiento y códigos de reporte/cierre: ver **MIGRACION-MYSQL.md**.
 
 ---
 
@@ -30,13 +33,15 @@ siguen en disco (`data\`); MySQL guarda su ruta.
 C:\Metricos\
   server.js                 servidor web (Node.js)
   lib\                      env.js (.env), db.js (MySQL), store.js (acceso a datos)
-  db\schema.sql             esquema MySQL
+  db\migrations\            esquema versionado (001..NNN, se aplican solos al iniciar)
+  db\metricos-dev.sql       volcado de la base de desarrollo (reconstruccion rapida)
   scripts\
     extract_v4.py           Excel de requisiciones  -> tabla gastos
     extract_entregas.py     Excel tiempos de entrega -> tabla entregas
     metricos_db.py          conexión MySQL para Python
     db-setup.js             crea BD, usuario y tablas
-    migrate-json-to-mysql.js  migración JSON -> MySQL con verificación
+    migrate-json-to-mysql.js  migración JSON -> MySQL con verificación (no destructiva, repetible)
+    usuarios.js             alta de usuarios / cambio de contraseña / activar-desactivar
     db-counts.js            filas por tabla (manifiesto de respaldos)
     legacy\                 scripts de depuración antiguos (no se usan)
   deploy\windows\
@@ -58,7 +63,7 @@ C:\Metricos\
 | Componente | Versión | Notas |
 |---|---|---|
 | Windows Server | 2016 o posterior | Windows PowerShell 5.1 (viene incluido) |
-| MySQL Server | 8.0.16 o posterior (probado con 8.4 LTS) | Instalado como servicio de Windows |
+| MySQL Server | 8.0.16 o posterior (probado con 8.4 LTS), o MariaDB 10.4+ | Instalado como servicio de Windows |
 | Node.js | 18.17 o posterior (recomendado **22 LTS x64**) | Probado con 22.x |
 | Python | **3.12 x64**, instalado "para todos los usuarios" | Paquetes: openpyxl, msoffcrypto-tool, PyMySQL |
 | NSSM | 2.24 | Registra Node.js como servicio. `install.ps1` lo descarga si hay Internet |
@@ -149,7 +154,10 @@ El instalador:
    `metricos` (solo local) y las tablas.
 5. **Migra** `data\*.json` a MySQL y verifica conteos y contenido
    (reporte en `logs\migracion-*.json`). Si algo no coincide, se detiene y **no**
-   instala el servicio. Si la base ya tenía datos, no toca nada.
+   instala el servicio. La migración es repetible: solo inserta lo que falte,
+   nunca borra ni sobrescribe lo capturado en la aplicación.
+6. Ofrece crear el primer usuario `mantenimiento_admin` (sin usuarios nadie puede entrar).
+   Más usuarios: `node scripts\usuarios.js crear <usuario> <rol> "<nombre>" [num_empleado]`.
 6. Registra el servicio **"Metricos"** con NSSM:
    - inicio automático, dependiente del servicio de MySQL;
    - reinicio automático a los 5 s si el proceso termina;
@@ -322,7 +330,7 @@ koide y Excel sintéticos.
 
 1. Cree la base y dé permisos al usuario de la app (como root en MySQL):
    ```sql
-   CREATE DATABASE metricos_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+   CREATE DATABASE metricos_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
    GRANT ALL ON metricos_test.* TO 'metricos'@'localhost', 'metricos'@'127.0.0.1', 'metricos'@'::1';
    ```
 2. Cree `C:\Metricos\.env.test`:

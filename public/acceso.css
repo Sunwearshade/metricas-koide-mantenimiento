@@ -1,0 +1,392 @@
+/* Pantallas de acceso (login) y operador de mantenimiento.
+   Misma paleta que styles.css del dashboard. */
+:root {
+  --bg: #0f172a;
+  --bg-soft: #16203a;
+  --panel: #ffffff;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --brand: #0e7490;
+  --brand-2: #0891b2;
+  --danger: #dc2626;
+  --ok: #16a34a;
+  --warn: #b45309;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 28px rgba(15, 23, 42, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%) fixed;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.45;
+  min-height: 100vh;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.acc-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+  color: #fff;
+}
+
+.acc-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.acc-brand img {
+  height: 36px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.acc-brand h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.acc-brand p {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.acc-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.9rem;
+}
+
+.acc-main {
+  display: flex;
+  justify-content: center;
+  padding: 16px 16px 48px;
+}
+
+.acc-card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px 24px;
+}
+
+.acc-card + .acc-card {
+  margin-top: 16px;
+}
+
+.acc-col {
+  width: 100%;
+  max-width: 560px;
+}
+
+.acc-title {
+  margin: 0 0 4px;
+  text-align: center;
+  font-size: 1.25rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--brand);
+}
+
+.acc-sub {
+  margin: 0 0 20px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.acc-field {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.acc-field span {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #334155;
+}
+
+.acc-field input[type="text"],
+.acc-field input[type="password"],
+.acc-field textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font: inherit;
+  background: #fff;
+}
+
+.acc-field textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.acc-field input:focus,
+.acc-field textarea:focus {
+  outline: 3px solid rgba(8, 145, 178, 0.25);
+  border-color: var(--brand-2);
+}
+
+.acc-code {
+  text-align: center;
+  font-size: 1.8rem !important;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+}
+
+.acc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--brand);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.acc-btn:hover {
+  background: var(--brand-2);
+}
+
+.acc-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.acc-btn.ok {
+  background: var(--ok);
+}
+
+.acc-btn.ghost {
+  background: #f1f5f9;
+  color: var(--ink);
+}
+
+.acc-btn.small {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+}
+
+.acc-btn-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.acc-link {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.acc-link:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.acc-msg {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.92rem;
+}
+
+.acc-msg.error {
+  background: #fef2f2;
+  color: var(--danger);
+  border: 1px solid #fecaca;
+}
+
+.acc-msg.warn {
+  background: #fffbeb;
+  color: var(--warn);
+  border: 1px solid #fde68a;
+}
+
+.acc-msg.info {
+  background: #ecfeff;
+  color: var(--brand);
+  border: 1px solid #a5f3fc;
+}
+
+.acc-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin: 0 0 18px;
+  font-size: 0.95rem;
+}
+
+.acc-dl dt {
+  color: var(--muted);
+}
+
+.acc-dl dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.acc-h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: #334155;
+}
+
+.acc-fotos {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.acc-foto {
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 10px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.acc-foto img {
+  display: block;
+  width: 100%;
+  max-height: 140px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+.acc-foto input {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 0.8rem;
+}
+
+.acc-cierre {
+  text-align: center;
+  font-size: 2.2rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--ok);
+  padding: 18px 8px;
+  margin: 8px 0 16px;
+  border: 2px solid #bbf7d0;
+  border-radius: 12px;
+  background: #f0fdf4;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  user-select: all;
+}
+
+.acc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.acc-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
+.acc-list li:first-child {
+  border-top: 0;
+}
+
+.acc-list .mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 700;
+}
+
+.acc-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.acc-badge.EN_ATENCION {
+  background: #fef3c7;
+  color: var(--warn);
+}
+
+.acc-badge.FINALIZADA {
+  background: #dcfce7;
+  color: var(--ok);
+}
+
+.acc-badge.CERRADA {
+  background: #e0f2fe;
+  color: var(--brand);
+}
+
+@media (max-width: 480px) {
+  .acc-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .acc-fotos {
+    grid-template-columns: 1fr;
+  }
+  .acc-cierre {
+    font-size: 1.7rem;
+  }
+}
+
+/* Barra de sesion inyectada en el dashboard (sesion.js). */
+.sesion-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-size: 0.85rem;
+}

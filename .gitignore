@@ -4,3 +4,5 @@ node_modules/
 logs/
 backups/
 __pycache__/
+.venv/
+data/atenciones-fotos/

@@ -1,7 +1,8 @@
 -- =====================================================================
--- Metricos de Mantenimiento - esquema MySQL 8
+-- Metricos de Mantenimiento - 001: esquema inicial (datos de la app)
 --
--- Se aplica con:  node scripts/db-setup.js   (idempotente)
+-- Compatible con MySQL 8.0.16+ y MariaDB 10.4+ (XAMPP).
+-- Se aplica con:  node scripts/db-setup.js   (idempotente; ver db/README.md)
 --
 -- Convenciones:
 --   * Fechas/horas en UTC (DATETIME(3)). La app convierte a ISO-8601 "...Z".
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS fuentes_sync (
   registros     INT          NOT NULL DEFAULT 0,
   detalle       VARCHAR(255) NULL,
   PRIMARY KEY (fuente)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Ultima actualizacion de cada fuente externa (koide, Excel gastos, Excel entregas)';
 
 -- ---------------------------------------------------------------------
@@ -49,7 +50,7 @@ CREATE TABLE IF NOT EXISTS maquinas (
   KEY idx_maquinas_orden (orden),
   KEY idx_maquinas_code (code),
   CONSTRAINT chk_maquinas_payload CHECK (JSON_VALID(payload))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tiempo_muerto (
   id                        INT          NOT NULL,
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS tiempo_muerto (
   KEY idx_tm_fecha (record_date),
   KEY idx_tm_maquina (machine_id),
   CONSTRAINT chk_tm_payload CHECK (JSON_VALID(payload))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- Gastos (extraido por scripts/extract_v4.py del Excel de requisiciones)
@@ -115,7 +116,7 @@ CREATE TABLE IF NOT EXISTS gastos (
   KEY idx_gastos_orden (orden),
   KEY idx_gastos_po (po),
   CONSTRAINT chk_gastos_payload CHECK (JSON_VALID(payload))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- Tiempos de entrega (extraido por scripts/extract_entregas.py)
@@ -140,7 +141,7 @@ CREATE TABLE IF NOT EXISTS entregas (
   KEY idx_entregas_orden (orden),
   KEY idx_entregas_po (po),
   CONSTRAINT chk_entregas_payload CHECK (JSON_VALID(payload))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- Contramedidas
@@ -166,7 +167,7 @@ CREATE TABLE IF NOT EXISTS contramedidas (
   KEY idx_cm_maquina (maquina),
   KEY idx_cm_estado (estado),
   CONSTRAINT chk_cm_extra CHECK (extra IS NULL OR JSON_VALID(extra))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS contramedida_fotos (
   id                INT          NOT NULL AUTO_INCREMENT,
@@ -179,7 +180,7 @@ CREATE TABLE IF NOT EXISTS contramedida_fotos (
   KEY idx_cmf_cm (contramedida_id, orden),
   CONSTRAINT fk_cmf_cm FOREIGN KEY (contramedida_id)
     REFERENCES contramedidas (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- Bonos (plantilla Excel + captura semanal)
@@ -195,7 +196,7 @@ CREATE TABLE IF NOT EXISTS bonos_plantilla (
   CONSTRAINT chk_bp_unica CHECK (id = 1),
   CONSTRAINT chk_bp_plantilla CHECK (plantilla IS NULL OR JSON_VALID(plantilla)),
   CONSTRAINT chk_bp_extra CHECK (extra IS NULL OR JSON_VALID(extra))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS bonos_semanas (
   clave         VARCHAR(100) NOT NULL,
@@ -230,7 +231,7 @@ CREATE TABLE IF NOT EXISTS calendarios (
   CONSTRAINT chk_cal_hojas CHECK (hojas IS NULL OR JSON_VALID(hojas)),
   CONSTRAINT chk_cal_estado CHECK (estado IS NULL OR JSON_VALID(estado)),
   CONSTRAINT chk_cal_extra CHECK (extra IS NULL OR JSON_VALID(extra))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- Documentos (archivos por categoria en DATA_DIR/documentos/<categoria>)
@@ -245,7 +246,7 @@ CREATE TABLE IF NOT EXISTS documentos (
   registrado   DATETIME(3)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_doc (categoria, nombre)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- Bitacora de migraciones JSON -> MySQL
@@ -257,4 +258,4 @@ CREATE TABLE IF NOT EXISTS migraciones (
   resultado    VARCHAR(20)  NOT NULL,
   resumen      LONGTEXT     NULL,
   PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

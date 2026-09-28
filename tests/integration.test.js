@@ -10,9 +10,11 @@
 //   PYTHON_PATH=C:\Program Files\Python312\python.exe
 //
 // Levanta un simulador de la API koide, genera Excel sinteticos, migra JSON de
-// prueba, arranca server.js y prueba cada modulo via HTTP.
+// prueba, arranca server.js (conectado a MySQL a traves de un proxy TCP para
+// simular caidas de la base) y prueba cada modulo via HTTP con sesion.
 
 const test = require("node:test");
+const net = require("net");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
@@ -155,7 +157,52 @@ function startKoide() {
   return new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv)));
 }
 
+/* ---------- Proxy TCP hacia MySQL (para simular perdida de conexion) ---------- */
+
+function startDbProxy(listenPort = 0) {
+  const sockets = new Set();
+  const srv = net.createServer((c) => {
+    const u = net.connect(Number(TEST_ENV.DB_PORT || 3306), TEST_ENV.DB_HOST || "127.0.0.1");
+    for (const x of [c, u]) sockets.add(x);
+    const done = () => {
+      c.destroy();
+      u.destroy();
+      sockets.delete(c);
+      sockets.delete(u);
+    };
+    c.on("error", done).on("close", done);
+    u.on("error", done).on("close", done);
+    c.pipe(u);
+    u.pipe(c);
+  });
+  return new Promise((resolve) =>
+    srv.listen(listenPort, "127.0.0.1", () =>
+      resolve({
+        port: srv.address().port,
+        stop: () =>
+          new Promise((r) => {
+            srv.close(() => r());
+            for (const x of sockets) x.destroy();
+          }),
+      })
+    )
+  );
+}
+
 /* ---------- Servidor de la app ---------- */
+
+const TERMINAL_KEY = "clave-terminal-de-prueba";
+const USUARIOS = {
+  admin: { username: "admin_prueba", password: "admin-prueba-123", rol: "mantenimiento_admin", nombre: "Admin Prueba" },
+  op: { username: "op_prueba", password: "op-prueba-123", rol: "mantenimiento_op", nombre: "Operador Prueba", numeroEmpleado: "1382" },
+};
+const jars = {}; // rol -> cookie de sesion
+
+// Los scripts que se ejecutan con execFileSync bloquean este proceso (donde vive
+// el proxy), asi que van directo a MySQL.
+function directEnv() {
+  return { ...appEnv, DB_PORT: String(TEST_ENV.DB_PORT || 3306) };
+}
 
 let appProc = null;
 let BASE = "";
@@ -173,6 +220,8 @@ function childEnv(extra = {}) {
     GASTOS_EXCEL_PASSWORD: EXCEL_PASSWORD,
     KOIDE_DEPARTMENT: "Mantenimiento",
     KOIDE_PASSWORD: "clave-koide",
+    TERMINAL_API_KEY: TERMINAL_KEY,
+    KOIDE_LOOKUP_MIN_MS: "0",
     LOG_DIR: path.join(TMP, "logs"),
     ...extra,
   };
@@ -202,10 +251,25 @@ function stopApp() {
   });
 }
 
-async function api(method, url, body) {
+async function login(username, password) {
+  const r = await fetch(BASE + "/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const cookie = r.headers.get("set-cookie");
+  return { status: r.status, data: await r.json(), cookie: cookie ? cookie.split(";")[0] : null, setCookie: cookie };
+}
+
+// as: "admin" | "op" | null (sin sesion) | { headers } (encabezados propios)
+async function api(method, url, body, as = "admin") {
+  const headers = body ? { "Content-Type": "application/json" } : {};
+  if (typeof as === "string" && jars[as]) headers.Cookie = jars[as];
+  if (as && typeof as === "object") Object.assign(headers, as.headers);
   const r = await fetch(BASE + url, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers,
+    redirect: "manual",
     body: body ? JSON.stringify(body) : undefined,
   });
   const type = r.headers.get("content-type") || "";
@@ -215,17 +279,20 @@ async function api(method, url, body) {
 
 let koide;
 let dbq;
+let dbProxy;
 
 test.before(async () => {
   writeFixtureData();
   execFileSync(PYTHON, [path.join(__dirname, "fixtures", "make_excels.py"), XL_DIR, EXCEL_PASSWORD]);
   koide = await startKoide();
+  dbProxy = await startDbProxy();
   const port = 20000 + Math.floor(Math.random() * 20000);
   BASE = `http://127.0.0.1:${port}`;
-  appEnv = childEnv({ PORT: String(port), KOIDE_BASE_URL: `http://127.0.0.1:${koide.address().port}` });
+  appEnv = childEnv({ PORT: String(port), KOIDE_BASE_URL: `http://127.0.0.1:${koide.address().port}`, DB_PORT: String(dbProxy.port) });
 
   // Base de pruebas limpia + esquema + migracion de los JSON sinteticos.
-  Object.assign(process.env, appEnv);
+  // (El proceso de pruebas va directo a MySQL; la app pasa por el proxy.)
+  Object.assign(process.env, { ...appEnv, DB_PORT: String(TEST_ENV.DB_PORT || 3306) });
   const db = require("../lib/db");
   dbq = db.query;
   const conn = await db.getPool().getConnection();
@@ -235,14 +302,18 @@ test.before(async () => {
   for (const t of tables) await conn.query(`DELETE FROM \`${Object.values(t)[0]}\``);
   await conn.query("SET FOREIGN_KEY_CHECKS = 1");
   conn.release();
-  const out = execFileSync(process.execPath, [path.join(ROOT, "scripts", "migrate-json-to-mysql.js")], { env: appEnv, cwd: TMP }).toString();
+  const out = execFileSync(process.execPath, [path.join(ROOT, "scripts", "migrate-json-to-mysql.js")], { env: directEnv(), cwd: TMP }).toString();
   assert.match(out, /RESULTADO: OK/);
+  const auth = require("../lib/auth");
+  for (const u of Object.values(USUARIOS)) await auth.createUser(u);
   await startApp();
+  for (const [k, u] of Object.entries(USUARIOS)) jars[k] = (await login(u.username, u.password)).cookie;
 });
 
 test.after(async () => {
   await stopApp();
   koide && koide.close();
+  dbProxy && (await dbProxy.stop());
   await require("../lib/db").closePool();
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -252,12 +323,14 @@ const count = async (table, where = "") => Number((await dbq(`SELECT COUNT(*) AS
 /* ---------- Pruebas ---------- */
 
 test("archivos estaticos y proteccion de rutas", async () => {
-  const r = await fetch(BASE + "/");
+  const r = await api("GET", "/");
   assert.equal(r.status, 200);
   assert.match(r.headers.get("content-type"), /text\/html/);
-  assert.equal((await fetch(BASE + "/app.js")).status, 200);
-  const bad = await fetch(BASE + "/..%2f..%2fconfig.json");
+  assert.equal((await api("GET", "/app.js")).status, 200);
+  const bad = await api("GET", "/..%2f..%2fconfig.json");
   assert.notEqual(bad.status, 200);
+  const bad2 = await api("GET", "/..%2f..%2fconfig.json", null, null);
+  assert.notEqual(bad2.status, 200);
 });
 
 test("tiempo muerto: /api/data sirve lo migrado y /api/refresh sincroniza koide", async () => {
@@ -482,4 +555,296 @@ test("persistencia tras reiniciar el servidor", async () => {
   for (let i = 0; i < antes.length; i++) assert.deepEqual(despues[i].data, antes[i].data);
   const d = await api("GET", "/api/data");
   assert.equal(d.data.count, tAntes);
+});
+
+/* ---------- Autenticacion y roles ---------- */
+
+test("login: credenciales, cookie de sesion, me, logout, bloqueo", async () => {
+  let r = await login(USUARIOS.admin.username, "incorrecta");
+  assert.equal(r.status, 401);
+  assert.equal(r.cookie, null);
+  r = await login("no_existe", "x");
+  assert.equal(r.status, 401);
+
+  r = await login(USUARIOS.op.username, USUARIOS.op.password);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.redirect, "/operador-mantenimiento");
+  assert.equal(r.data.user.rol, "mantenimiento_op");
+  assert.equal(r.data.user.password_hash, undefined, "nunca se expone el hash");
+  assert.match(r.setCookie, /HttpOnly/);
+  assert.match(r.setCookie, /SameSite=Strict/);
+  const cookie = r.cookie;
+
+  const me = await api("GET", "/api/auth/me", null, { headers: { Cookie: cookie } });
+  assert.equal(me.status, 200);
+  assert.equal(me.data.user.username, USUARIOS.op.username);
+  assert.equal(me.data.user.numeroEmpleado, "1382");
+
+  await api("POST", "/api/auth/logout", null, { headers: { Cookie: cookie } });
+  assert.equal((await api("GET", "/api/auth/me", null, { headers: { Cookie: cookie } })).status, 401, "logout invalida la sesion en el servidor");
+  assert.equal((await api("GET", "/api/operador/atenciones", null, { headers: { Cookie: "metricos_sid=falsa" } })).status, 401);
+
+  // Contrasenas guardadas con hash (scrypt), nunca en claro.
+  const [u] = await dbq("SELECT password_hash FROM usuarios WHERE username = ?", [USUARIOS.admin.username]);
+  assert.match(u.password_hash, /^scrypt\$/);
+  assert.ok(!u.password_hash.includes(USUARIOS.admin.password));
+  const [s] = await dbq("SELECT token_hash FROM sesiones LIMIT 1");
+  assert.match(s.token_hash, /^[0-9a-f]{64}$/, "la base guarda solo el hash del token");
+
+  // 5 intentos fallidos -> bloqueo temporal.
+  for (let i = 0; i < 5; i++) await login("usuario_bloqueo", "x");
+  assert.equal((await login("usuario_bloqueo", "x")).status, 429);
+
+  // Usuario desactivado no puede entrar.
+  await require("../lib/auth").createUser({ username: "op_inactivo", password: "inactivo-123", rol: "mantenimiento_op", nombre: "Inactivo" });
+  await require("../lib/auth").setActive("op_inactivo", false);
+  assert.equal((await login("op_inactivo", "inactivo-123")).status, 401);
+});
+
+test("autorizacion: el backend valida el rol (401/403)", async () => {
+  const soloAdmin = [
+    ["GET", "/api/data"],
+    ["GET", "/api/refresh"],
+    ["GET", "/api/bonos"],
+    ["POST", "/api/bonos/week"],
+    ["GET", "/api/gastos"],
+    ["POST", "/api/gastos/refresh"],
+    ["GET", "/api/entregas"],
+    ["GET", "/api/contramedidas"],
+    ["POST", "/api/contramedidas"],
+    ["GET", "/api/calendarios"],
+    ["GET", "/api/documentos"],
+    ["DELETE", "/api/documentos/Dibujos/x.pdf"],
+  ];
+  for (const [m, u] of soloAdmin) {
+    assert.equal((await api(m, u, m === "GET" ? null : {}, null)).status, 401, `${m} ${u} sin sesion`);
+    assert.equal((await api(m, u, m === "GET" ? null : {}, "op")).status, 403, `${m} ${u} como operador`);
+  }
+  assert.equal((await api("GET", "/api/operador/atenciones", null, null)).status, 401);
+  assert.equal((await api("GET", "/api/operador/atenciones", null, "op")).status, 200);
+  assert.equal((await api("GET", "/api/operador/atenciones", null, "admin")).status, 200, "el admin tambien puede usar la pantalla de operador");
+
+  // Paginas: sin sesion -> /login; operador -> su pantalla; admin -> dashboard.
+  let r = await api("GET", "/", null, null);
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get("location"), "/login");
+  r = await api("GET", "/", null, "op");
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get("location"), "/operador-mantenimiento");
+  assert.equal((await api("GET", "/app.js", null, "op")).status, 403);
+  assert.equal((await api("GET", "/operador-mantenimiento", null, "op")).status, 200);
+  assert.equal((await api("GET", "/operador-mantenimiento/atender/1", null, "op")).status, 200);
+  assert.equal((await api("GET", "/", null, "admin")).status, 200);
+  assert.equal((await api("GET", "/login", null, null)).status, 200);
+  const h = await api("GET", "/api/health", null, null);
+  assert.equal(h.status, 200);
+  assert.equal(h.data.db, true);
+});
+
+/* ---------- Operador de mantenimiento ---------- */
+
+const PNG = (() => {
+  const zlib = require("zlib");
+  const crcT = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcT[n] = c >>> 0;
+  }
+  const crc = (b) => {
+    let x = 0xffffffff;
+    for (const v of b) x = crcT[(x ^ v) & 255] ^ (x >>> 8);
+    return (x ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (t, d) => {
+    const l = Buffer.alloc(4);
+    l.writeUInt32BE(d.length);
+    const td = Buffer.concat([Buffer.from(t), d]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(td));
+    return Buffer.concat([l, td, c]);
+  };
+  const ih = Buffer.alloc(13);
+  ih.writeUInt32BE(20, 0);
+  ih.writeUInt32BE(20, 4);
+  ih[8] = 8;
+  ih[9] = 2;
+  const raw = require("crypto").randomBytes((20 * 3 + 1) * 20); // ruido: no se comprime a < 100 bytes
+  for (let y = 0; y < 20; y++) raw[y * 61] = 0;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ih), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+})();
+
+let cierreGenerado = null;
+let atencionId = null;
+
+test("operador: codigo de reporte -> aceptar -> evidencia -> finalizar -> codigo de cierre", async () => {
+  // Codigo con formato invalido / inexistente / paro ya finalizado.
+  assert.equal((await api("GET", "/api/operador/reportes/ABC", null, "op")).status, 400);
+  assert.equal((await api("GET", "/api/operador/reportes/99999", null, "op")).status, 404);
+  let r = await api("GET", "/api/operador/reportes/1001", null, "op");
+  assert.equal(r.status, 200);
+  assert.equal(r.data.puedeAceptar, false, "el paro 1001 ya tiene hora de fin");
+  assert.equal((await api("POST", "/api/operador/reportes/1001/aceptar", null, "op")).status, 409);
+
+  // Reporte abierto (1000 no tiene downtime_end).
+  r = await api("GET", "/api/operador/reportes/1000", null, "op");
+  assert.equal(r.status, 200);
+  assert.equal(r.data.puedeAceptar, true);
+  assert.equal(r.data.reporte.maquina, "M1");
+  const tmAntes = await dbq("SELECT payload FROM tiempo_muerto WHERE id = 1000");
+
+  r = await api("POST", "/api/operador/reportes/1000/aceptar", null, "op");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.estado, "EN_ATENCION");
+  assert.equal(r.data.aceptadoPor, USUARIOS.op.nombre);
+  assert.equal(r.data.tecnicoNumeroEmpleado, "1382");
+  atencionId = r.data.id;
+
+  // Doble aceptacion (mismo u otro usuario) -> 409.
+  assert.equal((await api("POST", "/api/operador/reportes/1000/aceptar", null, "op")).status, 409);
+  assert.equal((await api("POST", "/api/operador/reportes/1000/aceptar", null, "admin")).status, 409);
+  r = await api("GET", "/api/operador/reportes/1000", null, "op");
+  assert.equal(r.data.puedeAceptar, false);
+  assert.equal(r.data.atencion.id, atencionId);
+
+  // Validaciones de la captura.
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: " " }, "op")).status, 400);
+  const foto = (tipo, name = `${tipo}.png`, buf = PNG) => ({ tipo, name, base64: buf.toString("base64") });
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x", fotos: [foto("antes"), foto("despues"), foto("antes")] }, "op")).status, 400, "max 2 fotos");
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x", fotos: [foto("antes", "a.gif")] }, "op")).status, 400, "solo jpg/png");
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x", fotos: [foto("antes", "a.png", Buffer.alloc(300, 1))] }, "op")).status, 400, "contenido que no es imagen");
+
+  // Otro operador no ve ni finaliza la atencion ajena.
+  await require("../lib/auth").createUser({ username: "op_otro", password: "op-otro-123", rol: "mantenimiento_op", nombre: "Otro" });
+  const otro = (await login("op_otro", "op-otro-123")).cookie;
+  assert.equal((await api("GET", `/api/operador/atenciones/${atencionId}`, null, { headers: { Cookie: otro } })).status, 404);
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x" }, { headers: { Cookie: otro } })).status, 404);
+
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "Se cambió sensor ñ", comments: "ok", fotos: [foto("antes"), foto("despues", "d.PNG")] }, "op");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.estado, "FINALIZADA");
+  assert.match(r.data.codigoCierre, /^C-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+  assert.equal(r.data.fotos.length, 2);
+  assert.equal(r.data.actionTaken, "Se cambió sensor ñ");
+  assert.ok(r.data.responseTimeMinutes >= 0);
+  assert.ok(r.data.repairTimeMinutes >= 0);
+  cierreGenerado = r.data.codigoCierre;
+  for (const f of r.data.fotos) {
+    const g = await api("GET", f.url, null, "op");
+    assert.equal(g.status, 200);
+    assert.deepEqual(g.data, PNG);
+    assert.equal((await api("GET", f.url, null, { headers: { Cookie: otro } })).status, 404);
+  }
+  const fotosDb = await dbq("SELECT ruta FROM paro_atencion_fotos WHERE atencion_id = ?", [atencionId]);
+  assert.equal(fotosDb.length, 2);
+  for (const f of fotosDb) assert.ok(fs.existsSync(path.join(DATA_DIR, f.ruta)));
+
+  // Ya finalizada: no se puede volver a finalizar ni aceptar.
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x" }, "op")).status, 409);
+  r = await api("GET", "/api/operador/reportes/1000", null, "op");
+  assert.equal(r.data.motivo, "El reporte ya fue atendido");
+
+  // El reporte original (espejo koide) no se modifico.
+  assert.deepEqual(await dbq("SELECT payload FROM tiempo_muerto WHERE id = 1000"), tmAntes);
+
+  // Trazabilidad.
+  const ev = await dbq("SELECT evento, usuario_id FROM paro_atencion_eventos WHERE atencion_id = ? ORDER BY id", [atencionId]);
+  assert.deepEqual(ev.map((e) => e.evento), ["ACEPTADO", "FINALIZADO"]);
+
+  // Un paro recien creado en koide (no esta en la copia local) se encuentra
+  // porque la consulta resincroniza.
+  koideRecords = [{ ...makeRecords(1, 7000)[0], downtime_end: null, downtime_minutes: null }, ...makeRecords(30)];
+  r = await api("GET", "/api/operador/reportes/7000", null, "op");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.puedeAceptar, true);
+  koideRecords = makeRecords(30);
+  await api("GET", "/api/refresh");
+});
+
+test("terminal: validar codigo de cierre", async () => {
+  const url = "/api/terminal/cierres/validar";
+  const key = { headers: { "X-Terminal-Key": TERMINAL_KEY } };
+  assert.equal((await api("POST", url, { codigoCierre: cierreGenerado }, null)).status, 401, "sin clave");
+  assert.equal((await api("POST", url, { codigoCierre: cierreGenerado }, "admin")).status, 401, "una sesion de usuario no sirve");
+  assert.equal((await api("POST", url, { codigoCierre: cierreGenerado }, { headers: { "X-Terminal-Key": "otra" } })).status, 401);
+  let r = await api("POST", url, { codigoCierre: "XYZ" }, key);
+  assert.equal(r.status, 400);
+  assert.equal(r.data.valido, false);
+  r = await api("POST", url, { codigoCierre: "C-AAAA-AAAA" }, key);
+  assert.equal(r.status, 404);
+  r = await api("POST", url, { codigoCierre: cierreGenerado, codigoReporte: "1001" }, key);
+  assert.equal(r.status, 409, "codigo de otro reporte");
+
+  // Acepta minusculas / sin guiones.
+  r = await api("POST", url, { codigoCierre: cierreGenerado.toLowerCase().replace(/-/g, ""), codigoReporte: "1000", terminal: "TERM-01" }, key);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.valido, true);
+  assert.equal(r.data.yaConfirmado, false);
+  assert.equal(r.data.estado, "CERRADA");
+  assert.equal(r.data.codigoReporte, "1000");
+  r = await api("POST", url, { codigoCierre: cierreGenerado }, key);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.yaConfirmado, true, "validar de nuevo es idempotente");
+  const [a] = await dbq("SELECT estado, cierre_confirmado_por FROM paro_atenciones WHERE id = ?", [atencionId]);
+  assert.deepEqual({ ...a }, { estado: "CERRADA", cierre_confirmado_por: "TERM-01" });
+  const ev = await dbq("SELECT evento FROM paro_atencion_eventos WHERE atencion_id = ? ORDER BY id", [atencionId]);
+  assert.deepEqual(ev.map((e) => e.evento), ["ACEPTADO", "FINALIZADO", "CIERRE_VALIDADO"]);
+});
+
+/* ---------- Migracion repetida ---------- */
+
+test("migracion: se puede repetir sin duplicar ni revivir datos borrados", async () => {
+  const tablas = ["tiempo_muerto", "maquinas", "gastos", "entregas", "contramedidas", "contramedida_fotos", "bonos_semanas", "bonos_plantilla", "calendarios", "documentos", "migracion_registros"];
+  const antes = {};
+  for (const t of tablas) antes[t] = await count(t);
+  const run = () => execFileSync(process.execPath, [path.join(ROOT, "scripts", "migrate-json-to-mysql.js")], { env: directEnv(), cwd: TMP }).toString();
+
+  let out = run();
+  assert.match(out, /Nada nuevo que migrar/);
+  assert.match(out, /RESULTADO: OK/);
+  for (const t of tablas) assert.equal(await count(t), antes[t], `${t} no cambia al repetir`);
+
+  // cmvieja2 viene del JSON: se borra desde la app y la migracion NO la revive.
+  assert.equal((await api("DELETE", "/api/contramedidas/cmvieja2")).status, 200);
+  out = run();
+  assert.match(out, /borradas despues en la app/);
+  assert.match(out, /RESULTADO: OK/);
+  assert.equal(await count("contramedidas", "WHERE id = 'cmvieja2'"), 0);
+
+  // --force ya no existe.
+  assert.throws(() => execFileSync(process.execPath, [path.join(ROOT, "scripts", "migrate-json-to-mysql.js"), "--force"], { env: directEnv(), cwd: TMP, stdio: "pipe" }));
+  // El JSON de origen nunca se modifica.
+  assert.ok(JSON.parse(fs.readFileSync(path.join(DATA_DIR, "contramedidas.json"), "utf8")).some((c) => c.id === "cmvieja2"));
+});
+
+test("persistencia de sesiones y atenciones tras reiniciar", async () => {
+  await stopApp();
+  await startApp();
+  const r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op");
+  assert.equal(r.status, 200, "la sesion sigue valida despues de reiniciar");
+  assert.equal(r.data.estado, "CERRADA");
+  assert.equal(r.data.codigoCierre, cierreGenerado);
+});
+
+/* ---------- Perdida de conexion con MySQL ---------- */
+
+test("perdida de conexion MySQL: responde 503 y se recupera sola", async () => {
+  const port = dbProxy.port;
+  await dbProxy.stop();
+  let r = await api("GET", "/api/contramedidas");
+  assert.equal(r.status, 503, JSON.stringify(r.data));
+  assert.match(r.data.error, /Base de datos no disponible/);
+  assert.equal((await api("GET", "/api/health", null, null)).status, 503);
+  assert.equal((await login(USUARIOS.admin.username, USUARIOS.admin.password)).status, 503);
+  assert.equal(appProc.exitCode, null, "el servidor sigue vivo");
+
+  dbProxy = await startDbProxy(port);
+  let ok = false;
+  for (let i = 0; i < 20 && !ok; i++) {
+    r = await api("GET", "/api/contramedidas");
+    ok = r.status === 200;
+    if (!ok) await new Promise((res) => setTimeout(res, 250));
+  }
+  assert.ok(ok, "se recupera cuando MySQL vuelve");
+  assert.equal((await api("GET", "/api/health", null, null)).status, 200);
 });

@@ -47,7 +47,7 @@ try {
     [IO.File]::WriteAllText($cnf, "[client]`nuser=root`npassword=`"$rootPass`"`nhost=$(Get-EnvValue $cfg 'DB_HOST' '127.0.0.1')`nport=$(Get-EnvValue $cfg 'DB_PORT' '3306')`n", $utf8)
     $mysqlExe = Join-Path (Get-MySqlInfo).Bin 'mysql.exe'
     Invoke-Native $mysqlExe @("--defaults-extra-file=$cnf", '--default-character-set=utf8mb4', '-e',
-        "CREATE DATABASE IF NOT EXISTS ``$dbName`` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")
+        "CREATE DATABASE IF NOT EXISTS ``$dbName`` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     Invoke-Native $mysqlExe @("--defaults-extra-file=$cnf", '--default-character-set=utf8mb4', $dbName,
         '-e', "source $($sqlFile.Replace('\', '/'))")
     Write-Ok 'Base restaurada'

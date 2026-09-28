@@ -1,8 +1,9 @@
 "use strict";
 
 // Crea la base de datos, el usuario de la aplicacion y las tablas.
+// Compatible con MySQL 8 y MariaDB 10.4+ (XAMPP).
 //
-//   node scripts/db-setup.js            -> solo aplica db/schema.sql con el usuario de .env
+//   node scripts/db-setup.js            -> aplica las migraciones pendientes de db/migrations con el usuario de .env
 //   node scripts/db-setup.js --admin    -> ademas crea BD + usuario usando
 //                                          DB_ADMIN_USER / DB_ADMIN_PASSWORD (variables de entorno)
 //
@@ -33,7 +34,7 @@ async function createDbAndUser() {
   try {
     const dbName = ident(opts.database);
     await conn.query(
-      `CREATE DATABASE IF NOT EXISTS ${dbName} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`
+      `CREATE DATABASE IF NOT EXISTS ${dbName} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
     );
     if (!opts.password) throw new Error("DB_PASSWORD esta vacio en .env");
     // localhost = named pipe/socket; 127.0.0.1 y ::1 = TCP local.
@@ -56,9 +57,12 @@ async function main() {
   if (process.argv.includes("--admin")) await createDbAndUser();
   const conn = await db.getPool().getConnection();
   try {
-    const n = await db.applySchema(conn);
+    const r = await db.applyMigrations(conn, { log: console.log });
     const [tables] = await conn.query("SHOW TABLES");
-    console.log(`[db-setup] Esquema aplicado (${n} sentencias). Tablas: ${tables.map((t) => Object.values(t)[0]).join(", ")}`);
+    console.log(
+      `[db-setup] Migraciones nuevas: ${r.aplicadas.length ? r.aplicadas.join(", ") : "ninguna"} (ya aplicadas: ${r.existentes.length}).`
+    );
+    console.log(`[db-setup] Tablas: ${tables.map((t) => Object.values(t)[0]).join(", ")}`);
   } finally {
     conn.release();
     await db.closePool();

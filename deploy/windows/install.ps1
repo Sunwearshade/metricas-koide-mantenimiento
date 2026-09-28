@@ -136,6 +136,7 @@ $cfg = Read-DotEnv
 $set = @{}
 if ($Port -gt 0) { $set['PORT'] = "$Port" }
 if (-not $cfg['DB_PASSWORD']) { $set['DB_PASSWORD'] = New-RandomPassword; Write-Ok 'Contrasena de MySQL para el usuario de la app generada' }
+if (-not $cfg['TERMINAL_API_KEY']) { $set['TERMINAL_API_KEY'] = New-RandomPassword 32; Write-Ok 'Clave para la terminal de produccion (TERMINAL_API_KEY) generada' }
 if (-not $cfg['KOIDE_PASSWORD']) { $set['KOIDE_PASSWORD'] = Read-Secret 'Contrasena de la API koide (departamento Mantenimiento)' }
 if (-not $cfg['GASTOS_EXCEL_PASSWORD']) { $set['GASTOS_EXCEL_PASSWORD'] = Read-Secret 'Contrasena del Excel de requisiciones (MANTENIMIENTO_2026.xlsx)' }
 $pyCfg = Get-EnvValue $cfg 'PYTHON_PATH' ''
@@ -187,13 +188,25 @@ try {
 # ---------------------------------------------------------------- 5. Migracion
 if (-not $SkipMigration) {
     Write-Step 'Migrando JSON de data\ a MySQL'
+    # No destructiva e idempotente: solo inserta lo que falte y verifica.
     $code = Invoke-Native $nodeExe @((Join-Path $AppRoot 'scripts\migrate-json-to-mysql.js')) -AllowFail
-    if ($code -eq 3) {
-        Write-Ok 'La base ya tiene datos (migrada anteriormente); no se modifico.'
-    } elseif ($code -ne 0) {
+    if ($code -ne 0) {
         throw 'La migracion o su verificacion fallo. Revise el reporte en logs\migracion-*.json. El servicio NO se instalo.'
-    } else {
-        Write-Ok 'Migracion verificada: conteos y contenido coinciden.'
+    }
+    Write-Ok 'Migracion verificada: sin perdida de datos.'
+}
+
+# ---------------------------------------------------------------- 5b. Usuario administrador
+Write-Step 'Usuarios de la aplicacion'
+Invoke-Native $nodeExe @((Join-Path $AppRoot 'scripts\usuarios.js'), 'listar') -AllowFail | Out-Null
+if ((Read-Host '    Crear un usuario mantenimiento_admin ahora? (s/N)') -match '^[sS]') {
+    $adminUser = Read-Host '    Usuario (p.ej. admin.mtto)'
+    $adminName = Read-Host '    Nombre completo'
+    $env:USUARIO_PASSWORD = Read-Secret '    Contrasena (min. 8 caracteres)'
+    try {
+        Invoke-Native $nodeExe @((Join-Path $AppRoot 'scripts\usuarios.js'), 'crear', $adminUser, 'mantenimiento_admin', $adminName)
+    } finally {
+        Remove-Item Env:USUARIO_PASSWORD -ErrorAction SilentlyContinue
     }
 }
 
