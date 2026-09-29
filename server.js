@@ -9,11 +9,11 @@ const { loadEnvFile, env, resolvePath } = require("./lib/env");
 
 loadEnvFile();
 
-const crypto = require("crypto");
 const db = require("./lib/db");
 const store = require("./lib/store");
 const auth = require("./lib/auth");
 const atenciones = require("./lib/atenciones");
+const operadores = require("./lib/operadores");
 
 const ROOT = __dirname;
 const PYTHON = env("PYTHON_PATH", process.platform === "win32" ? "python" : "python3");
@@ -56,10 +56,27 @@ function readConfig() {
 }
 
 const config = readConfig();
-const API = env("KOIDE_BASE_URL", config.koideBaseUrl || "").replace(/\/$/, "");
 const area = config.responsibleArea || "Mantenimiento";
+const koideGeneral = require("./lib/koideGeneral");
 
-// Credenciales de koide: variables de entorno (.env); config.json solo como respaldo.
+// ---------------------------------------------------------------------------
+// FUENTES DE PAROS
+//
+//   KOIDE MES (koide-general)  FUENTE OFICIAL. Sirve el MISMO formato que el
+//                              sistema viejo (/compat/downtime-records y
+//                              /compat/machines), asi que el dashboard y todas
+//                              sus estadisticas no cambian.
+//   koide-production-app       DEPENDENCIA LEGACY TEMPORAL (192.168.1.201:4000).
+//                              Solo se consulta si KOIDE_BASE_URL esta definido,
+//                              y SOLO para los procesos que aun no migran al MES
+//                              (el MES dice cuales migraron: /equipos). Los
+//                              registros legacy de procesos migrados se
+//                              descartan (su historico ya vive en el MES con el
+//                              mismo id). Quitar KOIDE_BASE_URL = legacy apagado.
+// ---------------------------------------------------------------------------
+const LEGACY_API = env("KOIDE_BASE_URL", config.koideBaseUrl || "").replace(/\/$/, "");
+
+// Credenciales del sistema viejo: variables de entorno (.env); config.json solo como respaldo.
 function koideLogin() {
   const fromConfig = config.koideLogin || {};
   return {
@@ -68,36 +85,47 @@ function koideLogin() {
   };
 }
 
-// Sin respuesta de koide en este tiempo se usa la ultima copia guardada.
+// Sin respuesta en este tiempo se usa la ultima copia guardada.
 const KOIDE_TIMEOUT_MS = Number(env("KOIDE_TIMEOUT_MS", "20000"));
+// Resincronizacion periodica con el MES para que el dashboard vea los paros de
+// la terminal casi en tiempo real. KOIDE_GENERAL_REFRESH_SEC (default 20 s);
+// KOIDE_GENERAL_REFRESH_MIN se respeta por compatibilidad. 0 = solo la diaria.
+const REFRESH_MS = env("KOIDE_GENERAL_REFRESH_SEC", "") !== ""
+  ? Number(env("KOIDE_GENERAL_REFRESH_SEC", "20")) * 1000
+  : env("KOIDE_GENERAL_REFRESH_MIN", "") !== ""
+    ? Number(env("KOIDE_GENERAL_REFRESH_MIN", "0")) * 60000
+    : 20000;
+let huellaDatos = null; // evita reescribir tiempo_muerto si nada cambio
+let ultimaHuellaLog = null;
 
 let token = null;
 let cache = null;
 let lastUpdate = null;
 let lastError = null;
+let fuentes = {};
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
 async function login() {
-  const res = await fetch(`${API}/api/auth/login`, {
+  const res = await fetch(`${LEGACY_API}/api/auth/login`, {
     signal: AbortSignal.timeout(KOIDE_TIMEOUT_MS),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(koideLogin()),
   });
   if (!res.ok) {
-    throw new Error(`Login koide fallo (HTTP ${res.status})`);
+    throw new Error(`Login koide (legacy) fallo (HTTP ${res.status})`);
   }
   const data = await res.json();
-  if (!data.token) throw new Error("Login koide no devolvio token");
+  if (!data.token) throw new Error("Login koide (legacy) no devolvio token");
   token = data.token;
-  log(`[auth] Sesion iniciada (${data.department} / ${data.role})`);
+  log(`[legacy] Sesion iniciada (${data.department} / ${data.role})`);
 }
 
 async function apiGet(url, retry = true) {
-  const res = await fetch(`${API}${url}`, {
+  const res = await fetch(`${LEGACY_API}${url}`, {
     signal: AbortSignal.timeout(KOIDE_TIMEOUT_MS),
     headers: { "X-Auth-Token": token || "" },
   });
@@ -105,42 +133,100 @@ async function apiGet(url, retry = true) {
     await login();
     return apiGet(url, false);
   }
-  if (!res.ok) throw new Error(`API koide (HTTP ${res.status}) en ${url}`);
+  if (!res.ok) throw new Error(`API koide legacy (HTTP ${res.status}) en ${url}`);
   return res.json();
 }
 
-// Las llamadas simultaneas esperan la misma sincronizacion en curso.
+// Si ya hay una sincronizacion en curso, la peticion NO se conforma con ella
+// (pudo empezar antes del cambio que se quiere ver, p. ej. un paro recien
+// cerrado en la terminal): se encola UNA mas, compartida por todas las que
+// lleguen mientras tanto.
 let refreshing = null;
+let encolado = null;
 function refresh() {
-  if (!refreshing) refreshing = doRefresh().finally(() => (refreshing = null));
+  if (refreshing) {
+    if (!encolado) {
+      encolado = refreshing.catch(() => {}).then(() => {
+        encolado = null;
+        return refresh();
+      });
+    }
+    return encolado;
+  }
+  refreshing = doRefresh().finally(() => (refreshing = null));
   return refreshing;
 }
 
+async function leerLegacy() {
+  if (!token) await login();
+  return apiGet(`/api/downtime-records?responsibleArea=${encodeURIComponent(area)}`);
+}
+
 async function doRefresh() {
+  const errores = [];
+  const estado = {};
   try {
-    if (!token) await login();
-    const [records, machines] = await Promise.all([
-      apiGet(
-        `/api/downtime-records?responsibleArea=${encodeURIComponent(area)}`
-      ),
-      apiGet("/api/machines"),
-    ]);
+    let records;
+    let machines;
+    if (koideGeneral.configurado()) {
+      const [mesRecords, mesMachines, catalogo] = await Promise.all([
+        koideGeneral.downtimeRecords(),
+        koideGeneral.machines(),
+        koideGeneral.equipos(),
+      ]);
+      const migrados = new Set(catalogo.procesos.filter((p) => p.migradoMes).map((p) => p.codigo));
+      records = Array.isArray(mesRecords) ? mesRecords : [];
+      machines = Array.isArray(mesMachines) ? mesMachines : [];
+      estado.mes = { ok: true, registros: records.length, procesosMigrados: [...migrados] };
+      if (LEGACY_API) {
+        // DEPENDENCIA LEGACY TEMPORAL: procesos aun no migrados.
+        try {
+          const ids = new Set(records.map((r) => r.id));
+          const legacy = (await leerLegacy()).filter(
+            (r) => !migrados.has(String(r.machine_process || "").toUpperCase()) && !ids.has(r.id)
+          );
+          records = records.concat(legacy);
+          estado.legacy = { ok: true, registros: legacy.length, nota: "solo procesos no migrados al MES" };
+        } catch (err) {
+          // Sin el sistema viejo se conserva la ultima copia de ESOS procesos.
+          const previos = cache ? cache.records.filter((r) => !migrados.has(String(r.machine_process || "").toUpperCase())) : [];
+          records = records.concat(previos.filter((r) => !records.some((x) => x.id === r.id)));
+          estado.legacy = { ok: false, error: err.message, registrosDeCopia: previos.length };
+          errores.push(`legacy: ${err.message}`);
+        }
+      } else {
+        estado.legacy = { omitido: true };
+      }
+    } else {
+      // Sin MES configurado: comportamiento anterior (solo sistema viejo).
+      if (!LEGACY_API) throw new Error("Sin fuente de paros: configure KOIDE_GENERAL_URL/KOIDE_GENERAL_TOKEN");
+      if (!token) await login();
+      [records, machines] = await Promise.all([leerLegacy(), apiGet("/api/machines")]);
+      estado.legacy = { ok: true, registros: records.length, nota: "MES no configurado" };
+    }
     const payload = {
       updatedAt: new Date().toISOString(),
       area,
       source: "live",
-      records: Array.isArray(records) ? records : [],
-      machines: Array.isArray(machines) ? machines : [],
+      records,
+      machines,
     };
-    await store.saveTiempoMuerto(payload);
+    const huella = require("crypto").createHash("sha1").update(JSON.stringify([records, machines])).digest("hex");
+    if (huella !== huellaDatos || !cache) {
+      await store.saveTiempoMuerto(payload);
+      huellaDatos = huella;
+    }
     cache = payload;
     lastUpdate = new Date();
-    lastError = null;
-    log(
-      `[update] Descargados ${payload.records.length} registros y ${payload.machines.length} maquinas`
-    );
+    lastError = errores.length ? errores.join("; ") : null;
+    fuentes = estado;
+    if (huella !== ultimaHuellaLog) {
+      ultimaHuellaLog = huella;
+      log(`[update] ${payload.records.length} registros y ${payload.machines.length} maquinas (${JSON.stringify(estado)})`);
+    }
   } catch (err) {
     lastError = err.message || String(err);
+    fuentes = { ...estado, error: lastError };
     log("[update] ERROR:", lastError);
   }
   return cache;
@@ -725,30 +811,6 @@ function clientIp(req) {
   return req.socket.remoteAddress || "";
 }
 
-// Consulta de reportes del operador: si el codigo no esta en la copia local
-// (paro recien creado) se resincroniza con koide, como maximo una vez cada
-// KOIDE_LOOKUP_MIN_MS (5 s por defecto) para no saturar la API.
-const LOOKUP_MIN_MS = Number(env("KOIDE_LOOKUP_MIN_MS", "5000"));
-let lastLookupRefresh = 0;
-async function buscarReporte(codigo) {
-  const find = () => (cache ? cache.records.find((r) => String(r.id) === codigo) : null);
-  let rec = find();
-  let aviso = null;
-  if (!rec && refreshing) {
-    await refreshing;
-    rec = find();
-  }
-  if (!rec && Date.now() - lastLookupRefresh >= LOOKUP_MIN_MS) {
-    lastLookupRefresh = Date.now();
-    await refresh();
-    rec = find();
-  }
-  if (lastError) {
-    aviso = `No se pudo consultar el sistema de captura; se usa la copia del ${cache ? new Date(cache.updatedAt).toLocaleString("es-MX") : "—"}`;
-  }
-  return rec ? { record: rec, aviso } : null;
-}
-
 async function handleAuth(req, res, url, user) {
   if (url === "/api/auth/login" && req.method === "POST") {
     const body = await readBody(req, 10e3);
@@ -789,37 +851,55 @@ async function handleOperador(req, res, url, user) {
     if (url === "/api/operador/atenciones" && req.method === "GET") {
       return sendJson(res, 200, await atenciones.misAtenciones(user));
     }
+    if (url === "/api/operador/catalogos" && req.method === "GET") {
+      return sendJson(res, 200, await atenciones.catalogos());
+    }
     let m = url.match(/^\/api\/operador\/reportes\/([^/]+)$/);
     if (m && req.method === "GET") {
-      return sendJson(res, 200, await atenciones.consultar(decodeURIComponent(m[1]), user, buscarReporte));
+      return sendJson(res, 200, await atenciones.consultar(decodeURIComponent(m[1]), user));
     }
     m = url.match(/^\/api\/operador\/reportes\/([^/]+)\/aceptar$/);
     if (m && req.method === "POST") {
-      const a = await atenciones.aceptar(decodeURIComponent(m[1]), user, buscarReporte);
-      log(`[operador] Reporte ${a.codigoReporte} aceptado por ${user.username}`);
+      const a = await atenciones.aceptar(decodeURIComponent(m[1]), user);
+      log(`[operador] Paro ${a.codigoReporte} aceptado por ${user.username}`);
+      refresh().catch(() => {});
       return sendJson(res, 200, a);
     }
     m = url.match(/^\/api\/operador\/atenciones\/(\d+)$/);
     if (m && req.method === "GET") return sendJson(res, 200, await atenciones.obtener(m[1], user));
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/espera-externa$/);
+    if (m && req.method === "POST") {
+      const a = await atenciones.esperaExterna(m[1], user, await readBody(req, 10e3));
+      refresh().catch(() => {});
+      return sendJson(res, 200, a);
+    }
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/continuidad$/);
+    if (m && req.method === "POST") {
+      const a = await atenciones.tomarContinuidad(m[1], user);
+      log(`[operador] Paro ${a.codigoReporte}: continuidad tomada por ${user.username} (#${user.numeroEmpleado})`);
+      refresh().catch(() => {});
+      return sendJson(res, 200, a);
+    }
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/reanudar$/);
+    if (m && req.method === "POST") {
+      const a = await atenciones.reanudar(m[1], user);
+      refresh().catch(() => {});
+      return sendJson(res, 200, a);
+    }
     m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/finalizar$/);
     if (m && req.method === "POST") {
       const body = await readBody(req, 15e6);
-      const a = await atenciones.finalizar(m[1], user, body, DATA_DIR);
-      log(`[operador] Reporte ${a.codigoReporte} finalizado por ${user.username}; cierre ${a.codigoCierre}`);
+      const a = await atenciones.finalizar(m[1], user, body);
+      log(`[operador] Paro ${a.codigoReporte} finalizado por ${user.username} (#${user.numeroEmpleado}); codigo de cierre generado`);
+      refresh().catch(() => {});
       return sendJson(res, 200, a);
     }
-    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/fotos\/([^/]+)$/);
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/fotos\/(\d+)$/);
     if (m && req.method === "GET") {
-      let nombre;
-      try {
-        nombre = decodeURIComponent(m[2]);
-      } catch {
-        return sendJson(res, 400, { error: "Nombre invalido" });
-      }
-      const fp = await atenciones.fotoDe(m[1], nombre, user, DATA_DIR);
-      if (!fp) return sendJson(res, 404, { error: "Foto no encontrada" });
-      res.writeHead(200, { "Content-Type": fp.endsWith(".png") ? "image/png" : "image/jpeg", "Cache-Control": "private, max-age=86400" });
-      return res.end(fs.readFileSync(fp));
+      const f = await atenciones.fotoDe(m[1], m[2], user);
+      if (!f) return sendJson(res, 404, { error: "Foto no encontrada" });
+      res.writeHead(200, { "Content-Type": f.mime, "Cache-Control": "private, max-age=86400" });
+      return res.end(f.buffer);
     }
     sendJson(res, 404, { error: "No encontrado" });
   } catch (err) {
@@ -827,32 +907,66 @@ async function handleOperador(req, res, url, user) {
   }
 }
 
-function terminalKeyOk(req) {
-  const expected = env("TERMINAL_API_KEY", "");
-  const got = String(req.headers["x-terminal-key"] || "");
-  if (!expected || !got) return false;
-  const a = crypto.createHash("sha256").update(expected).digest();
-  const b = crypto.createHash("sha256").update(got).digest();
-  return crypto.timingSafeEqual(a, b);
+// El codigo de cierre lo genera y lo valida KOIDE MES: la terminal de
+// produccion habla SOLO con el MES (Capture Terminal -> koide-general). Este
+// endpoint (que nunca llego a usarse) se retira.
+async function handleTerminal(req, res) {
+  return sendJson(res, 410, {
+    error: "El codigo de cierre se valida en KOIDE MES (POST /api/tiempo-operativo/:id/cerrar). Este endpoint fue retirado.",
+    code: "VALIDACION_EN_MES",
+  });
 }
 
-async function handleTerminal(req, res, url) {
-  if (!env("TERMINAL_API_KEY", "")) return sendJson(res, 503, { error: "Integracion con la terminal no configurada (TERMINAL_API_KEY)" });
-  if (!terminalKeyOk(req)) return sendJson(res, 401, { error: "Clave de terminal invalida" });
-  if (url === "/api/terminal/cierres/validar" && req.method === "POST") {
-    const body = await readBody(req, 10e3);
-    try {
-      const r = await atenciones.validarCierre(body.codigoCierre, { terminal: body.terminal, codigoReporte: body.codigoReporte });
-      if (!r.yaConfirmado) log(`[terminal] Cierre ${r.codigoCierre} validado (reporte ${r.codigoReporte}, terminal ${body.terminal || "?"})`);
-      return sendJson(res, 200, r);
-    } catch (err) {
-      return sendError(res, err);
+// Operadores de mantenimiento (usuario + PIN + numero de empleado): los
+// administra el administrador de mantenimiento.
+// Roster de tecnicos del dashboard: el de config.json + los operadores activos
+// dados de alta aqui (el nombre de config tiene prioridad).
+async function rosterTecnicos() {
+  const base = (config.maintenanceTechnicians || []).map((t) => ({ ...t }));
+  const ya = new Set(base.map((t) => String(t.employee_number || "").trim()));
+  try {
+    for (const o of await auth.operadoresActivos()) {
+      const n = String(o.numero_empleado).trim();
+      if (!ya.has(n)) { base.push({ employee_number: n, name: o.nombre, role: o.rol }); ya.add(n); }
+      else { const t = base.find((x) => String(x.employee_number).trim() === n); if (t && !t.role) t.role = o.rol; }
     }
+  } catch (err) {
+    log(`[auth] roster: no se pudieron leer los operadores (${err.message})`);
   }
-  sendJson(res, 404, { error: "No encontrado" });
+  return base;
 }
 
-async function handleApp(req, res, url) {
+async function handleOperadoresAdmin(req, res, url, user) {
+  try {
+    if (url === "/api/admin/operadores" && req.method === "GET") return sendJson(res, 200, { operadores: await operadores.listar() }), true;
+    if (url === "/api/admin/personal-mes" && req.method === "GET") {
+      const c = await koideGeneral.catalogos();
+      return sendJson(res, 200, { personal: c.personal || [] }), true;
+    }
+    if (url === "/api/admin/operadores" && req.method === "POST") {
+      const b = await readBody(req, 10e3);
+      const o = await operadores.alta({ nombre: b.nombre, username: b.username, pin: b.pin, numeroEmpleado: b.numeroEmpleado, activo: b.activo });
+      log(`[admin] ${user.username} dio de alta al operador ${o.username} (#${o.numeroEmpleado})`);
+      return sendJson(res, 201, o), true;
+    }
+    const m = url.match(/^\/api\/admin\/operadores\/([A-Za-z0-9._-]{3,60})$/);
+    if (m && req.method === "PATCH") {
+      const b = await readBody(req, 10e3);
+      const o = await operadores.modificar(m[1], { nombre: b.nombre, numeroEmpleado: b.numeroEmpleado, activo: b.activo, pin: b.pin });
+      const que = Object.keys(b).filter((k) => ["nombre", "numeroEmpleado", "activo", "pin"].includes(k)).join(", ");
+      log(`[admin] ${user.username} modifico al operador ${o.username}: ${que}`);
+      return sendJson(res, 200, o), true;
+    }
+  } catch (err) {
+    if (err instanceof operadores.OperadorError) return sendJson(res, err.status, { error: err.message }), true;
+    if (err instanceof koideGeneral.KoideGeneralError) return sendJson(res, err.status, { error: err.message }), true;
+    throw err;
+  }
+  return false;
+}
+
+async function handleApp(req, res, url, user) {
+  if (url.startsWith("/api/admin/") && (await handleOperadoresAdmin(req, res, url, user))) return;
   if (url === "/api/data") {
     if (!cache) await refresh();
     if (!cache) return sendJson(res, 502, { error: "Aun no hay datos disponibles" });
@@ -861,10 +975,11 @@ async function handleApp(req, res, url) {
       area: cache.area,
       source: cache.source,
       lastError,
+      fuentes,
       count: cache.records.length,
       records: cache.records,
       machines: cache.machines || [],
-      technicians: config.maintenanceTechnicians || [],
+      technicians: await rosterTecnicos(),
       performance: config.performance || null,
       bonos: config.bonos || null,
       calendarios: config.calendarios || null,
@@ -896,6 +1011,8 @@ async function handleHealth(res) {
     db: dbOk,
     updatedAt: lastUpdate ? lastUpdate.toISOString() : null,
     lastError,
+    fuentes,
+    mes: koideGeneral.configurado(),
     nextUpdate: nextRunDate().toISOString(),
   });
 }
@@ -904,7 +1021,7 @@ const server = http.createServer(async (req, res) => {
   const url = req.url.split("?")[0];
   try {
     if (url === "/api/health") return await handleHealth(res);
-    if (url.startsWith("/api/terminal/")) return await handleTerminal(req, res, url);
+    if (url.startsWith("/api/terminal/")) return await handleTerminal(req, res);
 
     const isApi = url.startsWith("/api/");
     const file = isApi ? null : staticPath(req);
@@ -928,7 +1045,7 @@ const server = http.createServer(async (req, res) => {
       }
       // Todo lo demas es el dashboard administrativo (funcionalidad existente).
       if (user.rol !== ADMIN) return sendJson(res, 403, { error: "Sin permiso" });
-      return await handleApp(req, res, url);
+      return await handleApp(req, res, url, user);
     }
 
     if (file === null) return sendJson(res, 400, { error: "Ruta invalida" });
@@ -975,6 +1092,10 @@ async function start() {
       if (lastError) log("[update] Reintente con /api/refresh");
     });
     scheduleDaily();
+    if (koideGeneral.configurado() && REFRESH_MS > 0) {
+      setInterval(() => refresh(), REFRESH_MS).unref();
+      log(`[schedule] Resincronizacion con KOIDE MES cada ${Math.round(REFRESH_MS / 1000)} s`);
+    }
   });
 }
 

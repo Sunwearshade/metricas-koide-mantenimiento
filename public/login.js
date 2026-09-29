@@ -21,7 +21,7 @@
     const username = $("login-usuario").value.trim();
     const password = $("login-password").value;
     if (!username || !password) {
-      showError("Escribe usuario y contraseña.");
+      showError("Escribe tu usuario y tu PIN (o contraseña).");
       return;
     }
     $("login-btn").disabled = true;

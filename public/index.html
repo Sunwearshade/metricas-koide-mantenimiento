@@ -20,6 +20,7 @@
         <span id="last-update" class="badge">—</span>
         <span id="source-info" class="badge badge-muted">—</span>
       </div>
+      <a id="btn-atender" class="btn btn-ghost" href="/operador-mantenimiento" title="Atender físicamente un paro (con tu número de empleado)">Atender paros</a>
       <button id="btn-refresh" class="btn" type="button">
         <span class="btn-spinner" hidden></span>Actualizar datos
       </button>
@@ -37,6 +38,7 @@
       <button class="menu-item" data-view="documentos" type="button">Documentos</button>
       <button class="menu-item" data-view="gastos" type="button">Control de gastos</button>
       <button class="menu-item" data-view="entregas" type="button">Tiempos de entrega</button>
+      <button class="menu-item" data-view="operadores" type="button">Personal de mantenimiento</button>
     </aside>
 
     <main class="container">
@@ -75,6 +77,33 @@
 
       <!-- ================= TIEMPO MUERTO ================= -->
       <div class="view" id="view-tiempo">
+        <!-- Paros ABIERTOS en tiempo real (fuente: KOIDE MES). Independiente del
+             periodo seleccionado: un paro vivo importa aunque haya empezado ayer. -->
+        <section class="panel panel-abiertos" id="abiertos-panel" hidden>
+          <div class="panel-head">
+            <h2>Paros abiertos ahora</h2>
+            <span class="badge badge-muted" id="abiertos-cuenta">—</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tabla-abiertos">
+              <thead>
+                <tr>
+                  <th>Máquina</th>
+                  <th>Inicio</th>
+                  <th>Transcurrido</th>
+                  <th>Estado</th>
+                  <th>Técnicos · tiempo asignado</th>
+                  <th>Respuesta</th>
+                  <th>Reparación</th>
+                  <th>Categoría</th>
+                  <th>Problema</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="top3" aria-label="Top 3 máquinas">
           <div class="panel-head top3-head">
             <h2>Top 3 máquinas con mayor tiempo de reparación</h2>
@@ -236,6 +265,7 @@
                   <th>Fin</th>
                   <th>Minutos</th>
                   <th>Reparación</th>
+                  <th>Técnicos · tiempo asignado</th>
                   <th>Estado</th>
                 </tr>
               </thead>
@@ -607,6 +637,11 @@
         <section class="panel">
           <div class="panel-head">
             <h2>Control de desempeño por técnico</h2>
+            <select id="tec-rol-filtro" class="tec-select" aria-label="Filtrar por rol">
+              <option value="">Todos los roles</option>
+              <option value="mantenimiento_op">Operadores</option>
+              <option value="mantenimiento_admin">Administradores</option>
+            </select>
             <span class="badge badge-muted" id="tecnico-cuenta">—</span>
           </div>
           <div class="table-wrap">
@@ -1052,6 +1087,62 @@
       </div>
 
       <!-- ================= TIEMPOS DE ENTREGA ================= -->
+      <!-- ================= Operadores de mantenimiento ================= -->
+      <div class="view" id="view-operadores" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Personal de mantenimiento</h2>
+            <span class="badge badge-muted" id="op-admin-cuenta">—</span>
+          </div>
+          <p class="panel-hint">
+            Los operadores entran a la pantalla de atención con <strong>usuario + PIN de 4 dígitos</strong>.
+            El número de empleado es su identidad ante KOIDE MES: debe existir y estar activo en el catálogo de
+            personal de mantenimiento del MES. El PIN se guarda cifrado; tras 5 intentos fallidos la cuenta se
+            bloquea 15 minutos y tras 10, hasta que se restablezca el PIN aquí.
+          </p>
+          <form id="form-operador" class="form">
+            <div class="form-grid">
+              <div class="filter-group">
+                <label for="opa-numero">Número de empleado (KOIDE MES)</label>
+                <input id="opa-numero" list="opa-personal" autocomplete="off" required />
+                <datalist id="opa-personal"></datalist>
+              </div>
+              <div class="filter-group">
+                <label for="opa-nombre">Nombre</label>
+                <input id="opa-nombre" maxlength="150" required />
+              </div>
+              <div class="filter-group">
+                <label for="opa-usuario">Usuario</label>
+                <input id="opa-usuario" maxlength="60" autocomplete="off" autocapitalize="none" spellcheck="false" required />
+              </div>
+              <div class="filter-group">
+                <label for="opa-pin">PIN (4 dígitos)</label>
+                <input id="opa-pin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password" required />
+              </div>
+            </div>
+            <button class="btn" id="opa-guardar" type="submit">Dar de alta</button>
+            <p class="panel-hint" id="opa-msg" role="status"></p>
+          </form>
+          <div class="table-wrap">
+            <table class="table" id="tabla-operadores">
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th>Usuario</th>
+                  <th>Número</th>
+                  <th>Rol</th>
+                  <th>Estado</th>
+                  <th>Acceso</th>
+                  <th>PIN actualizado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
       <div class="view" id="view-entregas" hidden>
         <section class="panel">
           <div class="panel-head">
@@ -1131,8 +1222,8 @@
   </div>
 
   <footer class="foot">
-    Datos extraídos (solo lectura) del módulo Tiempo Muerto de Koide · Fuente:
-    <code>\\192.168.1.201\SystemKoide\koide-production-app</code>
+    Paros de mantenimiento: fuente oficial <strong>KOIDE MES</strong>
+    (procesos aún no migrados: sistema anterior, temporal)
   </footer>
 
   <script src="vendor/chart.umd.min.js"></script>

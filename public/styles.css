@@ -1605,3 +1605,22 @@ body {
 .ga-chart { flex: 1 1 380px; min-width: 300px; }
 .ga-chart h4 { margin: 0 0 8px; font-size: 0.95rem; color: var(--muted); }
 .ga-chart canvas { width: 100% !important; height: auto !important; }
+
+/* Paros abiertos en tiempo real (KOIDE MES) */
+.panel-abiertos { border-left: 3px solid #f59e0b; }
+.panel-abiertos .pendiente { color: #94a3b8; font-style: italic; font-size: 12px; }
+.panel-abiertos .muted { color: #94a3b8; font-size: 11px; }
+
+/* Tecnicos participantes de un paro (KOIDE MES): cada uno con el tiempo completo */
+.part-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.part-list li { white-space: nowrap; font-size: 0.85em; }
+.part-list .part-min { font-variant-numeric: tabular-nums; font-weight: 600; margin-left: 6px; }
+/* Operadores de mantenimiento */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.btn.btn-small { padding: 4px 10px; font-size: 0.8em; min-height: 0; }
+.op-acciones { white-space: nowrap; display: flex; gap: 6px; flex-wrap: wrap; }
+#opa-msg.error { color: #c0392b; }
+.rol-tag { font-size: 0.8em; font-weight: 600; padding: 0 6px; border-radius: 8px; }
+.rol-tag.rol-admin { background: #e8eefc; color: #1f3f8a; }
+.rol-tag.rol-op { background: #eef6ee; color: #25632b; }
+#btn-atender { text-decoration: none; }

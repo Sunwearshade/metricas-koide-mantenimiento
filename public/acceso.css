@@ -134,6 +134,7 @@ body {
 
 .acc-field input[type="text"],
 .acc-field input[type="password"],
+.acc-field select,
 .acc-field textarea {
   width: 100%;
   padding: 12px 14px;
@@ -149,6 +150,7 @@ body {
 }
 
 .acc-field input:focus,
+.acc-field select:focus,
 .acc-field textarea:focus {
   outline: 3px solid rgba(8, 145, 178, 0.25);
   border-color: var(--brand-2);
@@ -390,3 +392,7 @@ body {
   color: #fff;
   font-size: 0.85rem;
 }
+
+/* Tecnicos participantes (pantalla del operador) */
+.acc-part { margin: 12px 0; }
+.acc-part .mono { font-weight: 600; margin-left: 6px; white-space: nowrap; }

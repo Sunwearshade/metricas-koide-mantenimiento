@@ -18,22 +18,23 @@
     <div class="acc-user">
       <span id="op-usuario">—</span>
       <button class="acc-link" id="op-dashboard" type="button" hidden>Dashboard</button>
-      <button class="acc-link" id="op-logout" type="button">Cerrar sesión</button>
+      <button class="acc-link" id="op-logout" type="button" title="Cierra tu sesión para que otro técnico entre con su usuario y PIN">Cambiar de técnico</button>
     </div>
   </header>
 
   <main class="acc-main">
     <div class="acc-col">
       <p class="acc-msg error" id="op-error" role="alert" hidden></p>
+      <p class="acc-msg warn" id="op-solo-lectura" hidden>Tu usuario no tiene número de empleado: puedes consultar los paros, pero no aceptarlos ni finalizarlos. Pide al administrador que lo registre.</p>
 
       <!-- 1. Codigo del reporte -->
       <section id="paso-codigo">
         <form class="acc-card" id="form-codigo" novalidate>
           <h2 class="acc-title">Operador de mantenimiento</h2>
-          <p class="acc-sub">Ingresa código del reporte</p>
+          <p class="acc-sub">Ingresa el código de atención que muestra la terminal de producción</p>
           <label class="acc-field">
-            <span class="sr-only" hidden>Código del reporte</span>
-            <input type="text" id="op-codigo" class="acc-code" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="12" required />
+            <span class="sr-only" hidden>Código de atención</span>
+            <input type="text" id="op-codigo" class="acc-code" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="7" placeholder="000000" required />
           </label>
           <button class="acc-btn" id="op-buscar" type="submit">ACEPTAR</button>
         </form>
@@ -41,6 +42,11 @@
         <div class="acc-card" id="op-abiertas-card" hidden>
           <h3 class="acc-h2">Atenciones en curso</h3>
           <ul class="acc-list" id="op-abiertas"></ul>
+        </div>
+        <div class="acc-card" id="op-encurso-card" hidden>
+          <h3 class="acc-h2">Paros en atención por otros técnicos</h3>
+          <p class="acc-sub">Puedes tomar continuidad: quedarás registrado como participante sin borrar a los anteriores.</p>
+          <ul class="acc-list" id="op-encurso"></ul>
         </div>
         <div class="acc-card" id="op-recientes-card" hidden>
           <h3 class="acc-h2">Últimos reportes finalizados</h3>
@@ -66,10 +72,36 @@
         <div class="acc-card">
           <h2 class="acc-title">Atención del paro</h2>
           <p class="acc-sub" id="at-sub"></p>
+          <p class="acc-msg warn" id="at-solo-lectura" hidden></p>
+          <div class="acc-part" id="at-participantes"></div>
+          <button class="acc-btn ok" id="at-continuidad" type="button" hidden>TOMAR CONTINUIDAD</button>
           <dl class="acc-dl" id="at-datos"></dl>
+          <button class="acc-btn ghost" id="at-volver-lectura" type="button" hidden>Volver</button>
+        </div>
+        <div class="acc-card" id="at-espera-card">
+          <h3 class="acc-h2">Espera externa</h3>
+          <p class="acc-sub" id="at-espera-estado">Si la reparación depende de algo externo (fabricar una pieza, proveedor), pausa la atención: ese tiempo no cuenta como reparación.</p>
+          <label class="acc-field" id="at-espera-nota-campo">
+            <span>Motivo de la espera</span>
+            <input type="text" id="at-espera-nota" maxlength="500" placeholder="Ej. se fabrica pieza en taller" />
+          </label>
+          <div class="acc-btn-row">
+            <button class="acc-btn ghost" id="at-espera" type="button">PONER EN ESPERA EXTERNA</button>
+            <button class="acc-btn ok" id="at-reanudar" type="button" hidden>REANUDAR ATENCIÓN</button>
+          </div>
         </div>
         <form class="acc-card" id="form-finalizar" novalidate>
           <h3 class="acc-h2">Captura del trabajo</h3>
+          <label class="acc-field">
+            <span>Categoría de falla *</span>
+            <select id="at-categoria" required>
+              <option value="">Selecciona…</option>
+            </select>
+          </label>
+          <label class="acc-field">
+            <span>Problema detectado *</span>
+            <textarea id="at-problema" maxlength="5000" placeholder="Qué falla encontraste" required></textarea>
+          </label>
           <label class="acc-field">
             <span>Trabajo realizado *</span>
             <textarea id="at-trabajo" maxlength="5000" placeholder="Describe el trabajo realizado" required></textarea>
@@ -78,7 +110,7 @@
             <span>Comentarios</span>
             <textarea id="at-comentarios" maxlength="5000" placeholder="Opcional"></textarea>
           </label>
-          <h3 class="acc-h2">Evidencia (JPG o PNG, máx. 5 MB)</h3>
+          <h3 class="acc-h2">Evidencia (JPG o PNG, máx. 5 MB) — la foto «después» es obligatoria</h3>
           <div class="acc-fotos">
             <div class="acc-foto">
               Foto antes
@@ -86,8 +118,8 @@
               <img id="at-prev-antes" alt="" hidden />
             </div>
             <div class="acc-foto">
-              Foto después
-              <input type="file" id="at-foto-despues" accept="image/jpeg,image/png" />
+              Foto después *
+              <input type="file" id="at-foto-despues" accept="image/jpeg,image/png" required />
               <img id="at-prev-despues" alt="" hidden />
             </div>
           </div>

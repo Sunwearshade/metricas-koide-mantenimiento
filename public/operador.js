@@ -10,6 +10,8 @@
   const MAX_FOTO = 5 * 1024 * 1024;
   let consulta = null; // ultima consulta de reporte
   let atencion = null; // atencion en pantalla
+  let categorias = null; // catalogo de categorias de falla (KOIDE MES)
+  const EN_CURSO = ["EN_ATENCION", "EN_ESPERA_EXTERNA"];
 
   async function api(method, url, body) {
     const res = await fetch(url, {
@@ -50,15 +52,62 @@
 
   function datosReporte(r) {
     return [
-      ["Código", r.codigo],
+      ["Código de atención", r.codigo],
       ["Máquina", [r.maquina, r.maquinaNombre].filter(Boolean).join(" · ")],
+      ["Línea", r.linea],
       ["Proceso", r.proceso],
       ["Fecha / turno", [r.fecha, r.turno, r.grupo && `Grupo ${r.grupo}`].filter(Boolean).join(" · ")],
       ["Inicio del paro", fecha(r.inicio)],
-      ["Categoría", r.categoria],
-      ["Problema", r.descripcion],
+      ["Nota del operador", r.descripcion],
       ["Reportó", r.reportadoPor],
     ];
+  }
+
+  // Participantes del paro: cada uno con el tiempo COMPLETO del paro.
+  const ROLES = { inicio: "inició", continuidad: "tomó continuidad", finalizo: "finalizó" };
+  function horas(min) {
+    if (min == null) return "—";
+    return `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, "0")} h`;
+  }
+  function pintarParticipantes(el, a) {
+    el.innerHTML = "";
+    const lista = a.participantes || [];
+    if (!lista.length) return;
+    const t = document.createElement("h3");
+    t.className = "acc-h2";
+    t.textContent = `Técnicos participantes · duración del paro ${horas(a.duracion && a.duracion.minutos)}${a.duracion && a.duracion.enCurso ? " (en curso)" : ""}`;
+    const ul = document.createElement("ul");
+    ul.className = "acc-list";
+    for (const x of lista) {
+      const li = document.createElement("li");
+      li.dataset.numero = x.numeroEmpleado;
+      const actual = a.responsableActual === x.numeroEmpleado && ["EN_ATENCION", "EN_ESPERA_EXTERNA"].includes(a.estado);
+      const rs = x.rolSnapshot === "mantenimiento_admin" ? " · Administrador" : x.rolSnapshot === "mantenimiento_op" ? " · Operador" : "";
+      li.dataset.rol = x.rolSnapshot || "";
+      li.textContent = `${x.nombre || "—"} (#${x.numeroEmpleado})${rs} · ${x.roles.map((r) => ROLES[r] || r).join(", ")}${actual ? " · atiende ahora" : ""}`;
+      const tm = document.createElement("span");
+      tm.className = "mono";
+      tm.textContent = horas(x.minutosAsignados);
+      li.append(" ", tm);
+      ul.appendChild(li);
+    }
+    el.append(t, ul);
+  }
+  function participantesTexto(a) {
+    return (a.participantes || []).map((x) => `${x.nombre || x.numeroEmpleado} (${x.roles.map((r) => ROLES[r] || r).join(", ")})`).join(" · ") || null;
+  }
+
+  async function cargarCategorias() {
+    if (categorias) return;
+    const d = await api("GET", "/api/operador/catalogos");
+    categorias = d.categorias || [];
+    const sel = $("at-categoria");
+    for (const c of categorias) {
+      const o = document.createElement("option");
+      o.value = c.codigo;
+      o.textContent = c.nombre;
+      sel.appendChild(o);
+    }
   }
 
   function mostrar(paso) {
@@ -80,7 +129,8 @@
     $("op-codigo").focus();
     try {
       const d = await api("GET", "/api/operador/atenciones");
-      pintarLista("op-abiertas", d.abiertas, (a) => ({ texto: `Reporte ${a.codigoReporte} · ${a.reporte.maquina || ""}`, boton: "Continuar", ir: `${BASE}/atender/${a.id}` }));
+      pintarLista("op-abiertas", d.abiertas, (a) => ({ texto: `Paro ${a.codigoReporte} · ${a.reporte.maquina || ""}${a.estado === "EN_ESPERA_EXTERNA" ? " · en espera externa" : ""}`, boton: a.esParticipante ? "Continuar" : "Ver", ir: `${BASE}/atender/${a.id}` }));
+      pintarLista("op-encurso", d.enCurso || [], (a) => ({ texto: `Paro ${a.codigoReporte} · ${a.reporte.maquina || ""} · ${participantesTexto(a) || ""}`, boton: "Ver / tomar continuidad", ir: `${BASE}/atender/${a.id}` }));
       pintarLista("op-recientes", d.recientes, (a) => ({ texto: `Reporte ${a.codigoReporte} · ${a.reporte.maquina || ""}`, mono: a.codigoCierre, estado: a.estado, boton: "Ver", ir: `${BASE}/cierre/${a.id}` }));
     } catch (err) {
       error(err.message);
@@ -105,7 +155,7 @@
       if (v.estado) {
         const b = document.createElement("span");
         b.className = `acc-badge ${v.estado}`;
-        b.textContent = v.estado === "CERRADA" ? "Cerrado en terminal" : "Pendiente de terminal";
+        b.textContent = v.estado === "CERRADO" ? "Cerrado en terminal" : v.estado === "ANULADO" ? "Anulado" : "Pendiente de terminal";
         txt.append(b);
       }
       const btn = document.createElement("button");
@@ -121,7 +171,7 @@
   $("form-codigo").addEventListener("submit", async (e) => {
     e.preventDefault();
     const codigo = $("op-codigo").value.trim();
-    if (!codigo) return error("Ingresa el código del reporte.");
+    if (!codigo) return error("Ingresa el código de atención.");
     $("op-buscar").disabled = true;
     error("");
     try {
@@ -145,15 +195,19 @@
     $("conf-motivo").textContent = consulta.motivo || "";
     $("conf-motivo").hidden = !consulta.motivo;
     $("conf-aceptar").hidden = !consulta.puedeAceptar;
-    // Si el reporte ya lo tiene este usuario, ofrecer continuar.
-    if (consulta.atencion && consulta.atencion.estado === "EN_ATENCION") {
+    // Atencion en curso: quien participa continua; otro tecnico puede tomar
+    // continuidad; sin numero de empleado, solo consulta.
+    const a = consulta.atencion;
+    if (a && EN_CURSO.includes(a.estado)) {
+      $("conf-motivo").hidden = true;
       $("conf-aceptar").hidden = false;
-      $("conf-aceptar").textContent = "CONTINUAR ATENCIÓN";
+      $("conf-aceptar").textContent = a.esParticipante ? "CONTINUAR ATENCIÓN"
+        : a.puedeTomarContinuidad ? "VER ATENCIÓN / TOMAR CONTINUIDAD" : "VER ATENCIÓN (SOLO LECTURA)";
     } else if (consulta.atencion) {
       $("conf-aceptar").hidden = false;
       $("conf-aceptar").textContent = "VER CÓDIGO DE CIERRE";
     } else {
-      $("conf-aceptar").textContent = "ACEPTAR PARO";
+      $("conf-aceptar").textContent = "INICIAR ATENCIÓN";
     }
   }
 
@@ -161,7 +215,7 @@
 
   $("conf-aceptar").addEventListener("click", async () => {
     if (consulta.atencion) {
-      return ir(consulta.atencion.estado === "EN_ATENCION" ? `${BASE}/atender/${consulta.atencion.id}` : `${BASE}/cierre/${consulta.atencion.id}`);
+      return ir(EN_CURSO.includes(consulta.atencion.estado) ? `${BASE}/atender/${consulta.atencion.id}` : `${BASE}/cierre/${consulta.atencion.id}`);
     }
     $("conf-aceptar").disabled = true;
     error("");
@@ -178,11 +232,80 @@
   /* ---------- 3. Atender ---------- */
 
   function pantallaAtender() {
-    if (atencion.estado !== "EN_ATENCION") return ir(`${BASE}/cierre/${atencion.id}`, true);
+    if (!EN_CURSO.includes(atencion.estado)) return ir(`${BASE}/cierre/${atencion.id}`, true);
     mostrar("paso-atender");
-    $("at-sub").textContent = `Aceptado por ${atencion.aceptadoPor} · ${fecha(atencion.aceptadoEn)}`;
+    $("at-sub").textContent = `Aceptado por ${atencion.aceptadoPor}${atencion.tecnicoNumeroEmpleado ? ` (#${atencion.tecnicoNumeroEmpleado})` : ""} · ${fecha(atencion.aceptadoEn)}`;
+    pintarParticipantes($("at-participantes"), atencion);
+    // Permisos que calcula el servidor (el MES vuelve a validar cada accion):
+    //   puedeOperar  -> participa: pausa / reanuda
+    //   puedeTomarContinuidad -> otro tecnico puede sumarse
+    //   puedeFinalizar -> cualquier tecnico con numero, atencion en curso
+    const soloLectura = !atencion.puedeFinalizar && !atencion.puedeOperar && !atencion.puedeTomarContinuidad;
+    $("at-solo-lectura").hidden = atencion.esParticipante;
+    $("at-solo-lectura").textContent = soloLectura
+      ? "Solo lectura: tu usuario no puede intervenir en esta atención."
+      : atencion.esParticipante ? ""
+        : "No participas todavía en esta atención. Toma continuidad para continuarla, o captura el reporte para finalizarla: quedarás registrado como participante.";
+    $("at-continuidad").hidden = !(atencion.puedeTomarContinuidad && !atencion.esParticipante);
+    $("at-espera-card").hidden = !atencion.puedeOperar;
+    $("form-finalizar").hidden = !atencion.puedeFinalizar && !(atencion.puedeOperar && atencion.estado === "EN_ESPERA_EXTERNA");
+    $("at-volver-lectura").hidden = !$("form-finalizar").hidden;
     dl($("at-datos"), datosReporte(atencion.reporte));
+    const espera = atencion.estado === "EN_ESPERA_EXTERNA";
+    const ee = atencion.esperaExterna || {};
+    $("at-espera").hidden = espera;
+    $("at-espera-nota-campo").hidden = espera;
+    $("at-reanudar").hidden = !espera;
+    $("at-espera-estado").textContent = espera
+      ? `En espera externa desde ${fecha(ee.inicio)}${ee.nota ? ` · ${ee.nota}` : ""}. Reanuda para poder completar el reporte.`
+      : ee.minutos
+        ? `Espera externa acumulada: ${ee.minutos} min (no cuenta como reparación).`
+        : "Si la reparación depende de algo externo (fabricar una pieza, proveedor), pausa la atención: ese tiempo no cuenta como reparación.";
+    $("at-finalizar").disabled = espera;
+    cargarCategorias().catch((err) => error(err.message));
   }
+
+  $("at-espera").addEventListener("click", async () => {
+    $("at-espera").disabled = true;
+    error("");
+    try {
+      atencion = await api("POST", `/api/operador/atenciones/${atencion.id}/espera-externa`, { nota: $("at-espera-nota").value.trim() });
+      $("at-espera-nota").value = "";
+      pantallaAtender();
+    } catch (err) {
+      error(err.message);
+    } finally {
+      $("at-espera").disabled = false;
+    }
+  });
+
+  $("at-volver-lectura").addEventListener("click", () => ir(BASE));
+
+  $("at-continuidad").addEventListener("click", async () => {
+    $("at-continuidad").disabled = true;
+    error("");
+    try {
+      atencion = await api("POST", `/api/operador/atenciones/${atencion.id}/continuidad`);
+      pantallaAtender();
+    } catch (err) {
+      error(err.message);
+    } finally {
+      $("at-continuidad").disabled = false;
+    }
+  });
+
+  $("at-reanudar").addEventListener("click", async () => {
+    $("at-reanudar").disabled = true;
+    error("");
+    try {
+      atencion = await api("POST", `/api/operador/atenciones/${atencion.id}/reanudar`);
+      pantallaAtender();
+    } catch (err) {
+      error(err.message);
+    } finally {
+      $("at-reanudar").disabled = false;
+    }
+  });
 
   function preview(inputId, imgId) {
     $(inputId).addEventListener("change", () => {
@@ -226,7 +349,12 @@
   $("form-finalizar").addEventListener("submit", async (e) => {
     e.preventDefault();
     const trabajo = $("at-trabajo").value.trim();
+    const categoria = $("at-categoria").value;
+    const problema = $("at-problema").value.trim();
+    if (!categoria) return error("Selecciona la categoría de falla.");
+    if (!problema) return error("Describe el problema detectado.");
     if (!trabajo) return error("Escribe la descripción del trabajo realizado.");
+    if (!$("at-foto-despues").files[0]) return error("La foto «después» es obligatoria: sin evidencia no se genera el código de cierre.");
     if (!confirm("¿Completar el reporte? Después no se podrá modificar.")) return;
     $("at-finalizar").disabled = true;
     error("");
@@ -237,6 +365,8 @@
         if (f) fotos.push({ tipo, name: f.name, base64: await toB64(f) });
       }
       atencion = await api("POST", `/api/operador/atenciones/${atencion.id}/finalizar`, {
+        categoria,
+        problemaDetectado: problema,
         actionTaken: trabajo,
         comments: $("at-comentarios").value.trim(),
         fotos,
@@ -254,19 +384,23 @@
   /* ---------- 4. Cierre ---------- */
 
   function pantallaCierre() {
-    if (atencion.estado === "EN_ATENCION") return ir(`${BASE}/atender/${atencion.id}`, true);
+    if (EN_CURSO.includes(atencion.estado)) return ir(`${BASE}/atender/${atencion.id}`, true);
     mostrar("paso-cierre");
     $("cierre-codigo").textContent = atencion.codigoCierre || "—";
     dl($("cierre-datos"), [
-      ["Reporte", atencion.codigoReporte],
+      ["Código de atención", atencion.codigoReporte],
       ["Máquina", [atencion.reporte.maquina, atencion.reporte.maquinaNombre].filter(Boolean).join(" · ")],
-      ["Atendió", atencion.tecnicoNombre],
+      ["Categoría", atencion.categoria ? atencion.categoria.nombre : null],
+      ["Problema detectado", atencion.problemaDetectado],
+      ["Técnicos", participantesTexto(atencion) || atencion.tecnicoNombre || atencion.tecnicoNumeroEmpleado],
+      ["Tiempo asignado a cada técnico", atencion.duracion && atencion.duracion.minutos != null ? `${horas(atencion.duracion.minutos)}${atencion.duracion.enCurso ? " (en curso)" : ""}` : null],
       ["Aceptado", fecha(atencion.aceptadoEn)],
       ["Finalizado", fecha(atencion.finalizadoEn)],
       ["Tiempo de respuesta", atencion.responseTimeMinutes != null ? `${atencion.responseTimeMinutes} min` : null],
       ["Tiempo de reparación", atencion.repairTimeMinutes != null ? `${atencion.repairTimeMinutes} min` : null],
+      ["Espera externa", atencion.esperaExterna && atencion.esperaExterna.minutos ? `${atencion.esperaExterna.minutos} min` : null],
       ["Evidencia", atencion.fotos.length ? `${atencion.fotos.length} foto(s)` : "Sin fotos"],
-      ["Estado", atencion.estado === "CERRADA" ? `Cerrado en terminal (${fecha(atencion.cierreConfirmadoEn)})` : "Pendiente de capturar en la terminal"],
+      ["Estado", atencion.estado === "CERRADO" ? `Cerrado en terminal (${fecha(atencion.cierreConfirmadoEn)})` : atencion.estado === "ANULADO" ? "Anulado por supervisión" : "Pendiente de capturar en la terminal"],
     ]);
   }
 
@@ -307,8 +441,9 @@
 
   api("GET", "/api/auth/me")
     .then((d) => {
-      $("op-usuario").textContent = d.user.nombre;
+      $("op-usuario").textContent = d.user.numeroEmpleado ? `${d.user.nombre} · #${d.user.numeroEmpleado}` : d.user.nombre;
       $("op-dashboard").hidden = d.user.rol !== "mantenimiento_admin";
+      $("op-solo-lectura").hidden = Boolean(d.user.numeroEmpleado);
     })
     .catch(() => {});
 

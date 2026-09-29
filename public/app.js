@@ -42,9 +42,11 @@ const techRoster = new Map();
 
 function buildTechRoster() {
   techRoster.clear();
+  techRolActual.clear();
   for (const t of state.technicians || []) {
     const n = String(t.employee_number || "").trim();
     if (n) techRoster.set(n, String(t.name || "").trim());
+    if (n && t.role) techRolActual.set(n, t.role);
   }
 }
 
@@ -176,6 +178,14 @@ function techNombre(num) {
   return techRoster.get(String(num)) || "";
 }
 
+// Rol de sistema del personal (mig 088 del MES): el HISTORICO sale del
+// rol_snapshot de cada participacion; el roster aporta el rol actual.
+const ROL_SISTEMA_TXT = { mantenimiento_admin: "Administrador", mantenimiento_op: "Operador" };
+const techRolActual = new Map();
+function rolTxt(rol) {
+  return ROL_SISTEMA_TXT[rol] || "";
+}
+
 const ESTADO_CM = { "Pendiente": "warn", "En proceso": "info", "Completado": "ok" };
 const TIPO_CM_CLS = { "MTTR": "mttr", "MTBF": "mtbf", "Falla mecánica": "falla", "Falla eléctrica": "falla", "Falla común": "falla", "Preventivo": "mtbf", "Correctivo": "mttr" };
 
@@ -289,6 +299,7 @@ async function loadData(quiet = false) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     state.records = data.records || [];
+    liveFirma = firmaRegistros(state.records);
     state.machines = data.machines || [];
     state.technicians = data.technicians || [];
     state.performance = data.performance || null;
@@ -921,6 +932,7 @@ function renderTop3(rows, byMachine) {
 /* ---------------- Render ---------------- */
 
 function renderAll() {
+  renderAbiertos();
   const rows = applyFilters();
   const byMachine = aggregateByMachine(rows);
 
@@ -1387,6 +1399,126 @@ function renderTablaResumen(byMachine, rows) {
   void rows;
 }
 
+// Estados del contrato de paros. "Abierto" / "En reparación" / "Finalizado"
+// vienen del sistema anterior; KOIDE MES agrega "En espera externa" y
+// "Pendiente de cierre" (atención terminada, falta validar el código en la
+// terminal de producción).
+function claseStatus(status) {
+  if (status === "Finalizado") return "ok";
+  if (status === "En reparación" || status === "En espera externa") return "warn";
+  if (status === "Pendiente de cierre") return "info";
+  return "open";
+}
+
+// Paros vivos (no finalizados), sin importar el periodo seleccionado. Los
+// campos que aún no existen se muestran como pendientes, nunca se estiman.
+// Tecnicos que participaron en un paro (KOIDE MES): quien inicio, quien tomo
+// continuidad y quien finalizo. Regla de planta: CADA uno recibe el tiempo
+// COMPLETO del paro (no se divide ni se promedia).
+const ROL_TXT = { inicio: "inició", continuidad: "continuidad", finalizo: "finalizó" };
+// 60 -> "1:00 h" (formato de planta para el tiempo asignado a cada tecnico).
+function fmtHM(min) {
+  if (min == null || isNaN(min)) return "—";
+  return `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, "0")} h`;
+}
+function participantesDe(r) {
+  if (Array.isArray(r.participants) && r.participants.length) return r.participants;
+  const out = [];
+  const add = (n, rol) => {
+    const k = String(n || "").trim();
+    if (!k) return;
+    let x = out.find((y) => y.employee_number === k);
+    if (!x) out.push((x = { employee_number: k, name: techNombre(k) || null, roles: [], assigned_minutes: r.downtime_minutes ?? null }));
+    if (!x.roles.includes(rol)) x.roles.push(rol);
+  };
+  add(r.repair_started_by_employee_number, "inicio");
+  add(r.closed_by_employee_number, "finalizo");
+  return out;
+}
+function participantesHtml(r, minutosVivo) {
+  const lista = participantesDe(r);
+  if (!lista.length) return "";
+  const total = r.total_downtime_minutes ?? minutosVivo ?? r.downtime_minutes;
+  return `<ul class="part-list">${lista.map((x) => {
+    const actual = r.current_technician_employee_number === x.employee_number && r.status && r.status !== "Finalizado" && r.status !== "Pendiente de cierre";
+    const min = x.assigned_minutes ?? total;
+    const rs = rolTxt(x.role_snapshot);
+    return `<li data-numero="${escapeHtml(x.employee_number)}" data-rol="${escapeHtml(x.role_snapshot || "")}"><strong>${escapeHtml(x.name || techNombre(x.employee_number) || x.employee_number)}</strong>
+      <span class="muted">${escapeHtml(x.employee_number)}</span>${rs ? ` · <span class="rol-tag rol-${x.role_snapshot === "mantenimiento_admin" ? "admin" : "op"}">${rs}</span>` : ""} · ${escapeHtml(x.roles.map((y) => ROL_TXT[y] || y).join(", "))}${actual ? " · <em>atiende ahora</em>" : ""}
+      <span class="part-min">${fmtHM(min)}</span></li>`;
+  }).join("")}</ul>`;
+}
+
+function renderAbiertos() {
+  const panel = $("abiertos-panel");
+  if (!panel) return;
+  const vivos = state.records
+    .filter((r) => r.status && r.status !== "Finalizado")
+    .sort((a, b) => String(a.downtime_start || "").localeCompare(String(b.downtime_start || "")));
+  panel.hidden = vivos.length === 0;
+  $("abiertos-cuenta").textContent = `${fmtNum(vivos.length)} ${vivos.length === 1 ? "paro" : "paros"}`;
+  const pendiente = '<span class="pendiente">pendiente</span>';
+  const ahora = Date.now();
+  $("tabla-abiertos").querySelector("tbody").innerHTML = vivos
+    .map((r) => {
+      const ini = r.downtime_start ? new Date(r.downtime_start).getTime() : NaN;
+      const trans = Number.isFinite(ini) ? Math.max(0, Math.round((ahora - ini) / 60000)) : null;
+      const tecTxt = participantesHtml(r, trans) || pendiente;
+      return `<tr>
+        <td><strong>${escapeHtml(r.machine_code || "?")}</strong> · ${escapeHtml(r.machine_name || "")}</td>
+        <td>${fmtDateTime(r.downtime_start)}</td>
+        <td class="num">${trans != null ? fmtHours(trans) : "—"}</td>
+        <td><span class="badge-status ${claseStatus(r.status)}">${escapeHtml(r.status)}</span></td>
+        <td>${tecTxt}</td>
+        <td class="num">${r.response_time_minutes != null ? `${fmtNum(r.response_time_minutes)} min` : pendiente}</td>
+        <td class="num">${r.repair_time_minutes != null ? `${fmtNum(r.repair_time_minutes)} min` : pendiente}</td>
+        <td>${r.downtime_category ? escapeHtml(r.downtime_category) : pendiente}</td>
+        <td>${r.problem_description ? escapeHtml(r.problem_description) : pendiente}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+// TIEMPO REAL: el servidor se sincroniza con KOIDE MES cada pocos segundos;
+// el dashboard vuelve a leer /api/data y repinta SOLO las vistas de paros (no
+// las de captura: bonos, calendarios, contramedidas), y solo si algo cambió.
+const LIVE_MS = 20000;
+let liveFirma = null;
+function firmaRegistros(recs) {
+  let h = recs.length;
+  for (const r of recs) h = (h * 31 + String(r.id).length + String(r.status || "").length + String(r.updated_at || "").length + String(r.repair_time_minutes ?? "").length) >>> 0;
+  // participants_employee_numbers: tomar continuidad no cambia estado ni
+  // updated_at del paro, pero SI debe repintar a los tecnicos.
+  return `${recs.length}:${h}:${recs.map((r) => `${r.id}:${r.status}:${r.updated_at}:${r.participants_employee_numbers || ""}`).slice(0, 50).join(",")}`;
+}
+async function liveTick() {
+  if (document.hidden) return;
+  const vista = ["tiempo", "mttr", "tecnicos"].find((v) => $(`view-${v}`) && !$(`view-${v}`).hidden);
+  if (!vista) return;
+  try {
+    const res = await fetch("/api/data");
+    if (!res.ok) return;
+    const data = await res.json();
+    const firma = firmaRegistros(data.records || []);
+    if (firma === liveFirma) {
+      renderAbiertos(); // solo avanza el "transcurrido"
+      return;
+    }
+    liveFirma = firma;
+    state.records = data.records || [];
+    state.machines = data.machines || [];
+    state.updatedAt = data.updatedAt;
+    state.source = data.source;
+    renderHeader();
+    populateCategories();
+    populateTipos();
+    populateMonths();
+    renderAll();
+  } catch {
+    /* sin red: se conserva lo último conocido */
+  }
+}
+
 function renderTablaDetalle(rows) {
   const tbody = $("tabla-detalle").querySelector("tbody");
   $("detalle-cuenta").textContent = `${fmtNum(rows.length)} registros`;
@@ -1400,12 +1532,12 @@ function renderTablaDetalle(rows) {
     return ta < tb ? 1 : ta > tb ? -1 : 0;
   });
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" class="panel-hint">Sin registros.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="panel-hint">Sin registros.</td></tr>';
     return;
   }
   for (const r of sorted) {
     const status = r.status || "—";
-    const cls = status === "Finalizado" ? "ok" : status === "En reparación" ? "warn" : "open";
+    const cls = claseStatus(status);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${fmtDate(r.record_date)}</td>
@@ -1418,6 +1550,7 @@ function renderTablaDetalle(rows) {
       <td>${fmtDateTime(r.downtime_end)}</td>
       <td class="num">${r.downtime_minutes != null ? fmtNum(r.downtime_minutes) : "—"}</td>
       <td class="num">${r.repair_time_minutes != null ? fmtNum(r.repair_time_minutes) : "—"}</td>
+      <td>${participantesHtml(r) || "—"}</td>
       <td><span class="badge-status ${cls}">${escapeHtml(status)}</span></td>`;
     tbody.appendChild(tr);
   }
@@ -1987,7 +2120,9 @@ function extractTecnicos(value) {
 
 function computeTecnicos(rows, soloRoster = true) {
   const map = new Map();
-  const fields = ["repair_started_by_employee_number", "closed_by_employee_number"];
+  // participants_employee_numbers (KOIDE MES): tambien quienes tomaron
+  // continuidad. Cada tecnico recibe el paro COMPLETO.
+  const fields = ["repair_started_by_employee_number", "closed_by_employee_number", "participants_employee_numbers"];
 
   reincIndex = new Map();
   for (const r of rows) {
@@ -2023,10 +2158,13 @@ function computeTecnicos(rows, soloRoster = true) {
           : null,
     };
     for (const n of nums) {
-      if (!map.has(n)) map.set(n, { numero: n, paros: 0, parosList: [] });
+      if (!map.has(n)) map.set(n, { numero: n, paros: 0, parosList: [], rolesSistema: new Set() });
       const t = map.get(n);
       t.paros += 1;
       t.parosList.push(rec);
+      // Rol con el que participo EN ESTE paro (rol_snapshot del MES).
+      const p = Array.isArray(r.participants) ? r.participants.find((x) => String(x.employee_number) === n) : null;
+      for (const rs of (p && p.system_roles && p.system_roles.length ? p.system_roles : p && p.role_snapshot ? [p.role_snapshot] : [])) t.rolesSistema.add(rs);
     }
     if (!seen.has(rec)) seen.add(rec);
   }
@@ -2077,6 +2215,9 @@ function computeTecnicos(rows, soloRoster = true) {
     }
     t.reinc30 = t.reinc[30] || 0;
     t.calidad30 = t.finalizados ? (1 - t.reinc30 / t.finalizados) * 100 : null;
+    // Sin participaciones con rol registrado: el rol actual del roster.
+    if (!t.rolesSistema.size && techRolActual.has(t.numero)) t.rolesSistema.add(techRolActual.get(t.numero));
+    t.rolesSistema = [...t.rolesSistema];
   }
 
   const maxPtsH = Math.max(...list.map((t) => t.ptsHora), 0);
@@ -2408,8 +2549,11 @@ function renderTecDetalle(numero) {
 }
 
 function renderTecnicos(rows, includeCharts) {
-  const { list, tecnicos, paros, globalRespuesta, globalReparacion, globalCumplimiento, globalIndice } =
-    computeTecnicos(rows);
+  const calc = computeTecnicos(rows);
+  const { tecnicos, paros, globalRespuesta, globalReparacion, globalCumplimiento, globalIndice } = calc;
+  // Filtro por rol con el que participaron (Operador / Administrador).
+  const rolF = $("tec-rol-filtro") ? $("tec-rol-filtro").value : "";
+  const list = rolF ? calc.list.filter((t) => t.rolesSistema.includes(rolF)) : calc.list;
 
   $("kpi-tec-tecnicos").textContent = fmtNum(tecnicos);
   $("kpi-tec-paros").textContent = fmtNum(paros);
@@ -2432,7 +2576,7 @@ function renderTecnicos(rows, includeCharts) {
       const nombre = techNombre(t.numero);
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><strong>#${escapeHtml(t.numero)}</strong><span class="cell-sub">${escapeHtml(nombre || "")}</span></td>
+        <td><strong>#${escapeHtml(t.numero)}</strong><span class="cell-sub">${escapeHtml(nombre || "")}${t.rolesSistema.length ? ` · ${escapeHtml(t.rolesSistema.map(rolTxt).filter(Boolean).join(" / "))}` : ""}</span></td>
         <td class="num">${fmtNum(t.paros)}</td>
         <td class="num">${fmtNum(t.puntos)}</td>
         <td>${scoreCell(t.scoreRespuesta, t.medianaRespuesta != null ? `mediana ${t.medianaRespuesta.toFixed(1)} min` : "sin datos")}</td>
@@ -2453,6 +2597,7 @@ function renderTecnicos(rows, includeCharts) {
 }
 
 $("tec-radar-select").addEventListener("change", (e) => renderTecRadar(e.target.value));
+$("tec-rol-filtro").addEventListener("change", () => renderTecnicos(applyFilters(), true));
 $("tec-detalle-select").addEventListener("change", (e) => renderTecDetalle(e.target.value));
 
 /* ---------------- Menú de secciones ---------------- */
@@ -2491,6 +2636,9 @@ function switchView(name) {
   }
   if (name === "entregas") {
     renderEntregas();
+  }
+  if (name === "operadores") {
+    renderOperadores();
   }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -4162,6 +4310,7 @@ document.addEventListener("click", (e) => {
 
 defaultRange();
 loadData();
+setInterval(liveTick, LIVE_MS);
 loadContramedidas();
 loadBonos();
 loadCalendarios();
@@ -4172,3 +4321,109 @@ setInterval(() => loadData(true), 5 * 60 * 1000);
 setInterval(() => {
   autoRefreshTodo();
 }, 2 * 60 * 60 * 1000);
+
+
+/* ---------------- Operadores de mantenimiento (usuario + PIN) ---------------- */
+
+async function adminApi(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    credentials: "same-origin",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+  return data;
+}
+
+function opMsg(texto, esError) {
+  const el = $("opa-msg");
+  el.textContent = texto || "";
+  el.classList.toggle("error", Boolean(esError));
+}
+
+async function renderOperadores() {
+  try {
+    const [{ operadores }, { personal }] = await Promise.all([
+      adminApi("GET", "/api/admin/operadores"),
+      adminApi("GET", "/api/admin/personal-mes").catch(() => ({ personal: [] })),
+    ]);
+    $("opa-personal").innerHTML = (personal || [])
+      .map((p) => `<option value="${escapeHtml(p.numeroEmpleado)}">${escapeHtml(p.nombre || "")}</option>`).join("");
+    $("opa-numero").dataset.personal = JSON.stringify(personal || []);
+    $("op-admin-cuenta").textContent = `${operadores.filter((o) => o.rol !== "mantenimiento_admin").length} operadores · ${operadores.filter((o) => o.rol === "mantenimiento_admin" && o.numeroEmpleado).length} administradores que atienden paros`;
+    const tbody = $("tabla-operadores").querySelector("tbody");
+    tbody.innerHTML = operadores.length ? operadores.map((o) => `
+      <tr data-usuario="${escapeHtml(o.username)}">
+        <td>${escapeHtml(o.nombre)}</td>
+        <td class="mono">${escapeHtml(o.username)}</td>
+        <td class="mono">${escapeHtml(o.numeroEmpleado || "—")}</td>
+        <td>${o.rol === "mantenimiento_admin" ? `Administrador${o.numeroEmpleado ? " · atiende paros" : " · solo consulta"}` : "Operador"}</td>
+        <td><span class="badge-status ${o.activo ? "ok" : "open"}">${o.activo ? "Activo" : "Inactivo"}</span></td>
+        <td>${o.rol === "mantenimiento_admin" ? "Contraseña" : o.bloqueoDefinitivo ? '<span class="badge-status open">Bloqueado: restablecer PIN</span>' : o.bloqueado ? '<span class="badge-status warn">Bloqueado 15 min</span>' : o.intentosFallidos ? `${o.intentosFallidos} intento(s) fallido(s)` : "PIN OK"}</td>
+        <td>${o.pinActualizado ? fmtDateTime(o.pinActualizado) : "—"}</td>
+        <td class="op-acciones">
+          ${o.rol === "mantenimiento_admin" ? "" : '<button class="btn btn-small" data-accion="pin" type="button">Restablecer PIN</button>'}
+          <button class="btn btn-small" data-accion="numero" type="button">${o.numeroEmpleado ? "Cambiar número" : "Asignar número"}</button>
+          ${o.rol === "mantenimiento_admin" ? "" : `<button class="btn btn-small" data-accion="activo" type="button">${o.activo ? "Desactivar" : "Activar"}</button>`}
+        </td>
+      </tr>`).join("") : '<tr><td colspan="8" class="panel-hint">Sin personal. Da de alta el primer operador con el formulario.</td></tr>';
+  } catch (err) {
+    opMsg(err.message, true);
+  }
+}
+
+$("opa-numero").addEventListener("change", () => {
+  const lista = JSON.parse($("opa-numero").dataset.personal || "[]");
+  const p = lista.find((x) => String(x.numeroEmpleado) === $("opa-numero").value.trim());
+  if (p && !$("opa-nombre").value.trim()) $("opa-nombre").value = p.nombre || "";
+});
+
+$("form-operador").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  opMsg("");
+  $("opa-guardar").disabled = true;
+  try {
+    const o = await adminApi("POST", "/api/admin/operadores", {
+      numeroEmpleado: $("opa-numero").value.trim(),
+      nombre: $("opa-nombre").value.trim(),
+      username: $("opa-usuario").value.trim(),
+      pin: $("opa-pin").value,
+    });
+    $("form-operador").reset();
+    opMsg(`Operador ${o.username} (#${o.numeroEmpleado}) dado de alta.`);
+    renderOperadores();
+  } catch (err) {
+    opMsg(err.message, true);
+  } finally {
+    $("opa-guardar").disabled = false;
+  }
+});
+
+$("tabla-operadores").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-accion]");
+  if (!btn) return;
+  const usuario = btn.closest("tr").dataset.usuario;
+  const accion = btn.dataset.accion;
+  let body = null;
+  if (accion === "pin") {
+    const pin = prompt(`Nuevo PIN de 4 dígitos para ${usuario}:`);
+    if (pin == null) return;
+    body = { pin };
+  } else if (accion === "numero") {
+    const n = prompt(`Número de empleado para ${usuario} (debe existir y estar activo en KOIDE MES; vacío lo quita a un administrador):`);
+    if (n == null) return;
+    body = { numeroEmpleado: n.trim() };
+  } else {
+    body = { activo: btn.textContent.trim() === "Activar" };
+  }
+  opMsg("");
+  try {
+    await adminApi("PATCH", `/api/admin/operadores/${encodeURIComponent(usuario)}`, body);
+    opMsg(accion === "pin" ? `PIN de ${usuario} restablecido; bloqueos liberados.` : `Operador ${usuario} actualizado.`);
+    renderOperadores();
+  } catch (err) {
+    opMsg(err.message, true);
+  }
+});

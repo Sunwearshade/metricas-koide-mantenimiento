@@ -128,9 +128,47 @@ function writeFixtureData() {
 
 /* ---------- Simulador de la API koide ---------- */
 
-let koideRecords = makeRecords(25);
+// Dos fuentes, un solo servidor de prueba:
+//   KOIDE MES (koide-general)  /api/mantenimiento/servicio/*  FUENTE OFICIAL.
+//     Proceso "CORTE" (el de los datos sinteticos) = MIGRADO al MES.
+//   koide-production-app       /api/auth/login, /api/downtime-records, /api/machines
+//     DEPENDENCIA LEGACY: solo aporta procesos NO migrados (aqui "CNC").
+let mesRecords = makeRecords(25);
+let koideRecords = makeRecords(25); // lo que devuelve el sistema viejo (incluye CORTE, que debe ignorarse)
 let koideLogins = 0;
 const KOIDE_TOKEN = "tok-prueba";
+const MES_TOKEN = "tok-servicio-mes";
+const mesLlamadas = [];
+
+// Estado del MES simulado para el flujo del tecnico (las reglas reales se
+// prueban en koide-general: sim/tools/mtto_paros_check.js).
+const MES_PARO = () => ({
+  id: 1000001, origen: "terminal", estado: "DECLARADO", codigoAtencion: "482913", paroId: 77,
+  equipo: { id: 1, codigo: "M1", nombre: "MAQ-1", proceso: "CORTE", idMaquina: "L1-BISEL" },
+  fecha: "2026-09-28", turno: "1", grupo: null, inicio: "2026-09-28T14:00:00.000Z",
+  reportadoPor: { numeroEmpleado: "1253", nombre: "OPERADOR" }, descripcionOperador: "no avanza",
+  aceptadoEn: null, tecnico: null, categoria: null, problemaDetectado: null, accionRealizada: null, comentarios: null,
+  esperaExterna: { enCurso: false, inicio: null, minutos: 0, nota: null },
+  finalizadoEn: null, finalizadoPor: null, codigoCierre: null, cierre: null,
+  tiempos: { respuesta_min: null, reparacion_min: null, paro_min: null, entrega_min: null, espera_externa_min: 0 },
+  evidencias: [],
+  participantes: [], responsableActual: null, duracion: { minutos: 0, enCurso: true }, historialAtencion: [],
+});
+let mesParo = MES_PARO();
+// Participacion (mismas reglas que koide-general mig 087).
+let mesRolActual = null; // X-Actor-Rol de la peticion en curso (mig 088)
+function mesParticipa(numero, evento) {
+  const rol = { INICIO_ATENCION: "inicio", TOMA_CONTINUIDAD: "continuidad", FINALIZA_ATENCION: "finalizo" }[evento];
+  const tipoActor = mesRolActual === "mantenimiento_admin" ? "admin" : "operador";
+  mesParo.historialAtencion.push({ evento, numeroEmpleado: numero, rolSnapshot: mesRolActual, tipoActor, en: new Date().toISOString() });
+  let x = mesParo.participantes.find((y) => y.numeroEmpleado === numero);
+  if (!x) mesParo.participantes.push((x = { numeroEmpleado: numero, nombre: `TEC ${numero}`, roles: [], minutosAsignados: 60 }));
+  if (!x.roles.includes(rol)) x.roles.push(rol);
+  x.rolSnapshot = mesRolActual; x.tipoActor = tipoActor;
+  if (evento !== "FINALIZA_ATENCION") mesParo.responsableActual = numero;
+}
+const PERSONAL_MES = ["1382", "2000", "3000", "7777", "7778"].map((n) => ({ numeroEmpleado: n, nombre: `TECNICO ${n}` }));
+const mesFotos = new Map();
 
 function startKoide() {
   const srv = http.createServer((req, res) => {
@@ -138,21 +176,91 @@ function startKoide() {
       res.writeHead(code, { "Content-Type": "application/json" });
       res.end(JSON.stringify(obj));
     };
-    if (req.url === "/api/auth/login" && req.method === "POST") {
-      let body = "";
-      req.on("data", (c) => (body += c));
-      req.on("end", () => {
-        const b = JSON.parse(body || "{}");
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const b = body ? JSON.parse(body) : {};
+      const url = req.url;
+      // ---------------- KOIDE MES ----------------
+      if (url.startsWith("/api/mantenimiento/servicio/")) {
+        if (req.headers.authorization !== `Service ${MES_TOKEN}`) return send(401, { error: "token", code: "SERVICIO_NO_AUTENTICADO" });
+        const actor = req.headers["x-actor-numero-empleado"] || null;
+        mesRolActual = req.headers["x-actor-rol"] || null;
+        mesLlamadas.push({ method: req.method, url, actor, rol: mesRolActual });
+        // Mismas reglas que el MES: una accion de tecnico exige rol de mantenimiento.
+        if (req.method === "POST" && actor && !["mantenimiento_op", "mantenimiento_admin"].includes(mesRolActual)) {
+          return send(403, { error: "rol invalido", code: "ACTOR_ROL_INVALIDO" });
+        }
+        const r = url.slice("/api/mantenimiento/servicio".length);
+        if (r.startsWith("/compat/downtime-records")) return send(200, mesRecords);
+        if (r === "/compat/machines") return send(200, MACHINES);
+        if (r === "/equipos") return send(200, { procesos: [{ codigo: "CORTE", migradoMes: true }, { codigo: "CNC", migradoMes: false }], equipos: [] });
+        if (r === "/catalogos") return send(200, { categorias: [{ codigo: "sensor", nombre: "Sensor" }, { codigo: "falla_mecanica", nombre: "Falla mecánica" }], personal: PERSONAL_MES });
+        let m = r.match(/^\/paros\/por-codigo\/(\d+)(\/aceptar)?$/);
+        if (m) {
+          if (m[1] !== mesParo.codigoAtencion) return send(404, { error: "No existe un paro con ese codigo de atencion" });
+          if (!m[2]) return send(200, { codigo: m[1], puedeAceptar: mesParo.estado === "DECLARADO", motivo: mesParo.estado === "DECLARADO" ? null : "El paro ya fue aceptado por mantenimiento", paro: mesParo });
+          if (!actor) return send(403, { error: "sin numero", code: "TECNICO_SIN_NUMERO" });
+          if (mesParo.estado !== "DECLARADO") return send(409, { error: "El paro ya fue aceptado por mantenimiento" });
+          Object.assign(mesParo, { estado: "EN_ATENCION", aceptadoEn: new Date().toISOString(), tecnico: { numeroEmpleado: actor, nombre: `TEC ${actor}` } });
+          mesParticipa(actor, "INICIO_ATENCION");
+          return send(200, mesParo);
+        }
+        if (r.startsWith("/atenciones")) {
+          const numero = new URL(url, "http://x").searchParams.get("numero");
+          const mio = mesParo.tecnico && (!numero || mesParo.participantes.some((x) => x.numeroEmpleado === numero));
+          const vivo = ["EN_ATENCION", "EN_ESPERA_EXTERNA"].includes(mesParo.estado);
+          return send(200, { abiertas: mio && vivo ? [mesParo] : [], recientes: mio && !vivo ? [mesParo] : [] });
+        }
+        m = r.match(/^\/paros\/(\d+)(\/[a-z-]+)?(\/(\d+))?$/);
+        if (!m || Number(m[1]) !== mesParo.id) return send(404, { error: "Paro de mantenimiento no encontrado" });
+        if (!m[2]) return send(200, mesParo);
+        // Mismas reglas de identidad que el MES real (mttoParoService).
+        if (["/espera-externa", "/reanudar", "/finalizar", "/continuidad"].includes(m[2])) {
+          if (!actor) return send(403, { error: "El usuario de mantenimiento no tiene numero de empleado", code: "TECNICO_SIN_NUMERO" });
+        }
+        if (["/espera-externa", "/reanudar"].includes(m[2])
+          && !mesParo.participantes.some((x) => x.numeroEmpleado === actor && (x.roles.includes("inicio") || x.roles.includes("continuidad")))) {
+          return send(403, { error: "No participas en esta atencion", code: "TECNICO_NO_PARTICIPA" });
+        }
+        if (m[2] === "/continuidad") {
+          if (!["EN_ATENCION", "EN_ESPERA_EXTERNA"].includes(mesParo.estado)) return send(409, { error: "La atencion ya fue finalizada" });
+          if (mesParo.responsableActual !== actor) mesParticipa(actor, "TOMA_CONTINUIDAD");
+          return send(200, mesParo);
+        }
+        if (m[2] === "/espera-externa") { mesParo.estado = "EN_ESPERA_EXTERNA"; mesParo.esperaExterna = { enCurso: true, inicio: new Date().toISOString(), minutos: 0, nota: b.nota || null }; return send(200, mesParo); }
+        if (m[2] === "/reanudar") { mesParo.estado = "EN_ATENCION"; mesParo.esperaExterna = { ...mesParo.esperaExterna, enCurso: false, minutos: 7 }; return send(200, mesParo); }
+        if (m[2] === "/finalizar") {
+          if (mesParo.estado !== "EN_ATENCION") return send(409, { error: "La atencion ya fue finalizada" });
+          if (!(b.fotos || []).some((f) => f.tipo === "despues")) return send(400, { error: "foto despues obligatoria", code: "EVIDENCIA_REQUERIDA" });
+          mesParo.evidencias = b.fotos.map((f, i) => { mesFotos.set(i + 1, Buffer.from(f.base64, "base64")); return { id: i + 1, tipo: f.tipo, nombre: f.nombre, mime: "image/png" }; });
+          Object.assign(mesParo, {
+            estado: "PENDIENTE_CIERRE", categoria: { codigo: b.categoria, nombre: "Sensor" }, problemaDetectado: b.problemaDetectado,
+            accionRealizada: b.accionRealizada, comentarios: b.comentarios, finalizadoEn: new Date().toISOString(),
+            finalizadoPor: { numeroEmpleado: actor }, codigoCierre: "C-ABCD-EF23",
+            participantes: mesParo.participantes, historialAtencion: mesParo.historialAtencion,
+            tiempos: { respuesta_min: 12, reparacion_min: 40, paro_min: null, entrega_min: null, espera_externa_min: 7 },
+          });
+          mesParticipa(actor, "FINALIZA_ATENCION");
+          return send(200, mesParo);
+        }
+        if (m[2] === "/evidencias" && mesFotos.has(Number(m[4]))) {
+          res.writeHead(200, { "Content-Type": "image/png" });
+          return res.end(mesFotos.get(Number(m[4])));
+        }
+        return send(404, {});
+      }
+      // ---------------- koide-production-app (legacy) ----------------
+      if (url === "/api/auth/login" && req.method === "POST") {
         if (b.department !== "Mantenimiento" || b.password !== "clave-koide") return send(401, { error: "bad" });
         koideLogins++;
-        send(200, { token: KOIDE_TOKEN, department: "Mantenimiento", role: "Mantenimiento" });
-      });
-      return;
-    }
-    if (req.headers["x-auth-token"] !== KOIDE_TOKEN) return send(401, { error: "token" });
-    if (req.url.startsWith("/api/downtime-records?responsibleArea=Mantenimiento")) return send(200, koideRecords);
-    if (req.url === "/api/machines") return send(200, MACHINES);
-    send(404, {});
+        return send(200, { token: KOIDE_TOKEN, department: "Mantenimiento", role: "Mantenimiento" });
+      }
+      if (req.headers["x-auth-token"] !== KOIDE_TOKEN) return send(401, { error: "token" });
+      if (url.startsWith("/api/downtime-records?responsibleArea=Mantenimiento")) return send(200, koideRecords);
+      if (url === "/api/machines") return send(200, MACHINES);
+      send(404, {});
+    });
   });
   return new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv)));
 }
@@ -191,10 +299,9 @@ function startDbProxy(listenPort = 0) {
 
 /* ---------- Servidor de la app ---------- */
 
-const TERMINAL_KEY = "clave-terminal-de-prueba";
 const USUARIOS = {
   admin: { username: "admin_prueba", password: "admin-prueba-123", rol: "mantenimiento_admin", nombre: "Admin Prueba" },
-  op: { username: "op_prueba", password: "op-prueba-123", rol: "mantenimiento_op", nombre: "Operador Prueba", numeroEmpleado: "1382" },
+  op: { username: "op_prueba", password: "4826", rol: "mantenimiento_op", nombre: "Operador Prueba", numeroEmpleado: "1382" },
 };
 const jars = {}; // rol -> cookie de sesion
 
@@ -220,8 +327,8 @@ function childEnv(extra = {}) {
     GASTOS_EXCEL_PASSWORD: EXCEL_PASSWORD,
     KOIDE_DEPARTMENT: "Mantenimiento",
     KOIDE_PASSWORD: "clave-koide",
-    TERMINAL_API_KEY: TERMINAL_KEY,
-    KOIDE_LOOKUP_MIN_MS: "0",
+    KOIDE_GENERAL_TOKEN: MES_TOKEN,
+    KOIDE_GENERAL_REFRESH_MIN: "0",
     LOG_DIR: path.join(TMP, "logs"),
     ...extra,
   };
@@ -288,7 +395,7 @@ test.before(async () => {
   dbProxy = await startDbProxy();
   const port = 20000 + Math.floor(Math.random() * 20000);
   BASE = `http://127.0.0.1:${port}`;
-  appEnv = childEnv({ PORT: String(port), KOIDE_BASE_URL: `http://127.0.0.1:${koide.address().port}`, DB_PORT: String(dbProxy.port) });
+  appEnv = childEnv({ PORT: String(port), KOIDE_BASE_URL: `http://127.0.0.1:${koide.address().port}`, KOIDE_GENERAL_URL: `http://127.0.0.1:${koide.address().port}`, DB_PORT: String(dbProxy.port) });
 
   // Base de pruebas limpia + esquema + migracion de los JSON sinteticos.
   // (El proceso de pruebas va directo a MySQL; la app pasa por el proxy.)
@@ -333,23 +440,32 @@ test("archivos estaticos y proteccion de rutas", async () => {
   assert.notEqual(bad2.status, 200);
 });
 
-test("tiempo muerto: /api/data sirve lo migrado y /api/refresh sincroniza koide", async () => {
+test("tiempo muerto: KOIDE MES es la fuente; el sistema viejo solo aporta procesos no migrados", async () => {
   let r = await api("GET", "/api/data");
   assert.equal(r.status, 200);
-  assert.equal(r.data.count, 25);
-  assert.equal(r.data.machines.length, 3);
   assert.ok(Array.isArray(r.data.technicians));
   assert.ok(r.data.performance);
-  assert.deepEqual(r.data.records[0], makeRecords(25)[0]);
 
-  koideRecords = makeRecords(30);
+  // MES: 30 paros de CORTE (migrado). Sistema viejo: los mismos CORTE (se
+  // ignoran: ya viven en el MES) + 1 paro de CNC (no migrado, se agrega).
+  mesRecords = makeRecords(30);
+  const cnc = { ...makeRecords(1, 9000)[0], machine_process: "CNC", machine_code: "CNC1" };
+  koideRecords = [...makeRecords(30).map((x) => ({ ...x, problem_description: "VERSION VIEJA" })), cnc];
+  const llamadasAntes = mesLlamadas.length;
   r = await api("GET", "/api/refresh");
   assert.equal(r.status, 200);
-  assert.equal(r.data.count, 30);
+  assert.equal(r.data.count, 31, "30 del MES + 1 CNC del sistema viejo");
   assert.equal(r.data.source, "live");
   assert.equal(r.data.lastError, null);
-  assert.ok(koideLogins >= 1, "debe iniciar sesion en koide con las credenciales de .env");
-  assert.equal(await count("tiempo_muerto"), 30);
+  assert.ok(mesLlamadas.slice(llamadasAntes).some((c) => c.url.startsWith("/api/mantenimiento/servicio/compat/downtime-records")), "consulta el MES");
+  assert.ok(koideLogins >= 1, "el sistema viejo se consulta solo para procesos no migrados");
+  assert.equal(await count("tiempo_muerto"), 31);
+  const d = await api("GET", "/api/data");
+  assert.equal(d.data.records.filter((x) => x.problem_description === "VERSION VIEJA").length, 0, "los registros CORTE del sistema viejo se descartan");
+  assert.deepEqual(d.data.records.find((x) => x.id === 1000), makeRecords(30)[0], "el registro del MES llega tal cual (mismo formato)");
+  assert.ok(d.data.records.some((x) => x.id === 9000));
+  assert.equal(d.data.fuentes.mes.ok, true);
+  assert.equal(d.data.fuentes.legacy.registros, 1);
   const [row] = await dbq("SELECT record_date, machine_code, downtime_minutes, problem_description FROM tiempo_muerto WHERE id = 1001");
   assert.equal(row.record_date, "2026-09-02");
   assert.equal(row.machine_code, "M2");
@@ -527,7 +643,7 @@ test("gastos y entregas: lectura migrada y actualizacion via Python", async () =
   assert.equal(r.status, 200);
   assert.match(r.data.output, /TIEMPOS DE ENTREGA \(MTTO\): 3 partidas/);
   const sync = await dbq("SELECT fuente, registros FROM fuentes_sync ORDER BY fuente");
-  assert.deepEqual(sync.map((s) => [s.fuente, s.registros]), [["entregas", 3], ["gastos", 5], ["tiempo_muerto", 30]]);
+  assert.deepEqual(sync.map((s) => [s.fuente, s.registros]), [["entregas", 3], ["gastos", 5], ["tiempo_muerto", 31]]);
 });
 
 test("error de Python no borra los datos existentes", async () => {
@@ -549,7 +665,6 @@ test("persistencia tras reiniciar el servidor", async () => {
   const antes = await Promise.all(["/api/contramedidas", "/api/bonos", "/api/calendarios", "/api/gastos", "/api/entregas"].map((u) => api("GET", u)));
   await stopApp();
   const tAntes = await count("tiempo_muerto");
-  koideRecords = makeRecords(30);
   await startApp();
   const despues = await Promise.all(["/api/contramedidas", "/api/bonos", "/api/calendarios", "/api/gastos", "/api/entregas"].map((u) => api("GET", u)));
   for (let i = 0; i < antes.length; i++) assert.deepEqual(despues[i].data, antes[i].data);
@@ -596,9 +711,86 @@ test("login: credenciales, cookie de sesion, me, logout, bloqueo", async () => {
   assert.equal((await login("usuario_bloqueo", "x")).status, 429);
 
   // Usuario desactivado no puede entrar.
-  await require("../lib/auth").createUser({ username: "op_inactivo", password: "inactivo-123", rol: "mantenimiento_op", nombre: "Inactivo" });
+  await require("../lib/auth").createUser({ username: "op_inactivo", pin: "8264", rol: "mantenimiento_op", nombre: "Inactivo", numeroEmpleado: "7778" });
   await require("../lib/auth").setActive("op_inactivo", false);
-  assert.equal((await login("op_inactivo", "inactivo-123")).status, 401);
+  assert.equal((await login("op_inactivo", "8264")).status, 401);
+});
+
+test("operadores: alta por el administrador (usuario + PIN + numero del MES), PIN seguro y limite de intentos", async () => {
+  // Solo el administrador gestiona operadores.
+  assert.equal((await api("GET", "/api/admin/operadores", null, "op")).status, 403);
+  assert.equal((await api("POST", "/api/admin/operadores", { username: "x" }, "op")).status, 403);
+  assert.equal((await api("GET", "/api/admin/operadores", null, null)).status, 401);
+
+  const alta = (b) => api("POST", "/api/admin/operadores", { nombre: "Roberto", username: "roberto", pin: "5926", numeroEmpleado: "7777", ...b });
+  let r = await alta({ numeroEmpleado: "9999" });
+  assert.equal(r.status, 400, "numero que no existe en el catalogo del MES");
+  assert.match(r.data.error, /catalogo de personal/);
+  assert.equal((await alta({ pin: "12a4" })).status, 400, "PIN de 4 digitos");
+  assert.equal((await alta({ pin: "12345" })).status, 400);
+  assert.equal((await alta({ pin: "1111" })).status, 400, "PIN trivial");
+  assert.equal((await alta({ pin: "1234" })).status, 400, "PIN en secuencia");
+  assert.equal((await alta({ numeroEmpleado: "1382" })).status, 400, "numero ya usado por otro operador");
+  r = await alta({});
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(r.data.numeroEmpleado, "7777");
+  assert.equal(r.data.activo, true);
+  assert.equal((await alta({})).status, 409, "usuario repetido");
+  const lista = (await api("GET", "/api/admin/operadores")).data.operadores;
+  assert.ok(lista.some((o) => o.username === "roberto" && o.numeroEmpleado === "7777"));
+  assert.ok(lista.every((o) => !("password_hash" in o)));
+
+  // PIN cifrado (scrypt), nunca en texto plano.
+  const [u] = await dbq("SELECT password_hash FROM usuarios WHERE username = 'roberto'");
+  assert.match(u.password_hash, /^scrypt\$/);
+  assert.ok(!u.password_hash.includes("5926"));
+
+  // Entra con usuario + PIN; una contrasena larga o un PIN incorrecto no.
+  r = await login("roberto", "5926");
+  assert.equal(r.status, 200);
+  assert.equal(r.data.user.numeroEmpleado, "7777");
+  assert.equal((await login("roberto", "5926-extra")).status, 401);
+  assert.equal((await login("usuario_inexistente", "5926")).status, 401, "usuario invalido");
+
+  // El roster del dashboard incluye a los operadores activos.
+  const data = (await api("GET", "/api/data")).data;
+  assert.ok(data.technicians.some((t) => String(t.employee_number) === "7777"));
+
+  // Limite de intentos POR CUENTA y persistente: 5 fallos -> bloqueo temporal.
+  // (el intento con "5926-extra" ya conto como el primer fallo)
+  for (let i = 0; i < 4; i++) assert.equal((await login("roberto", "0000")).status, 401);
+  const [b1] = await dbq("SELECT intentos_fallidos, bloqueado_hasta FROM usuarios WHERE username = 'roberto'");
+  assert.equal(Number(b1.intentos_fallidos), 5);
+  assert.ok(b1.bloqueado_hasta, "bloqueo guardado en la base (sobrevive reinicios)");
+  assert.equal((await login("roberto", "5926")).status, 429, "bloqueado aunque el PIN sea correcto");
+
+  // 10 fallos -> bloqueo que solo libera el administrador.
+  await dbq("UPDATE usuarios SET intentos_fallidos = 9, bloqueado_hasta = NULL WHERE username = 'op_prueba'");
+  const opLock = await login(USUARIOS.op.username, "0000");
+  assert.equal(opLock.status, 401);
+  r = await login(USUARIOS.op.username, USUARIOS.op.password);
+  assert.equal(r.status, 423, "bloqueo definitivo");
+  assert.match(r.data.error, /administrador/);
+  r = await api("PATCH", `/api/admin/operadores/${USUARIOS.op.username}`, { pin: "4826" });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.bloqueado, false);
+  const re = await login(USUARIOS.op.username, USUARIOS.op.password);
+  assert.equal(re.status, 200, "el administrador restablecio el PIN");
+  jars.op = re.cookie;
+
+  // Desactivar: no entra y sus sesiones se cierran.
+  // Restablecer el PIN libera TODOS los bloqueos (base y memoria).
+  assert.equal((await api("PATCH", "/api/admin/operadores/roberto", { pin: "5926" })).status, 200);
+  const l1 = await login("roberto", "5926");
+  assert.equal(l1.status, 200, "entra de inmediato tras restablecer el PIN");
+  const s1 = l1.cookie;
+  r = await api("PATCH", "/api/admin/operadores/roberto", { activo: false });
+  assert.equal(r.data.activo, false);
+  assert.equal((await api("GET", "/api/auth/me", null, { headers: { Cookie: s1 } })).status, 401);
+  assert.equal((await login("roberto", "5926")).status, 401);
+  // Cambio de numero: tambien validado contra el MES.
+  assert.equal((await api("PATCH", "/api/admin/operadores/roberto", { numeroEmpleado: "9999" })).status, 400);
+  assert.equal((await api("PATCH", "/api/admin/operadores/roberto", { activo: true })).data.activo, true);
 });
 
 test("autorizacion: el backend valida el rol (401/403)", async () => {
@@ -677,118 +869,243 @@ const PNG = (() => {
 let cierreGenerado = null;
 let atencionId = null;
 
-test("operador: codigo de reporte -> aceptar -> evidencia -> finalizar -> codigo de cierre", async () => {
-  // Codigo con formato invalido / inexistente / paro ya finalizado.
+test("operador: codigo de atencion -> aceptar -> espera externa -> finalizar -> codigo de cierre (via KOIDE MES)", async () => {
+  mesParo = MES_PARO();
+  // Formato del codigo de atencion (6 digitos, sin cero inicial) e inexistente.
   assert.equal((await api("GET", "/api/operador/reportes/ABC", null, "op")).status, 400);
-  assert.equal((await api("GET", "/api/operador/reportes/99999", null, "op")).status, 404);
-  let r = await api("GET", "/api/operador/reportes/1001", null, "op");
-  assert.equal(r.status, 200);
-  assert.equal(r.data.puedeAceptar, false, "el paro 1001 ya tiene hora de fin");
-  assert.equal((await api("POST", "/api/operador/reportes/1001/aceptar", null, "op")).status, 409);
+  assert.equal((await api("GET", "/api/operador/reportes/012345", null, "op")).status, 400);
+  assert.equal((await api("GET", "/api/operador/reportes/999999", null, "op")).status, 404);
 
-  // Reporte abierto (1000 no tiene downtime_end).
-  r = await api("GET", "/api/operador/reportes/1000", null, "op");
-  assert.equal(r.status, 200);
+  let r = await api("GET", "/api/operador/reportes/482913", null, "op");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.puedeAceptar, true);
   assert.equal(r.data.reporte.maquina, "M1");
-  const tmAntes = await dbq("SELECT payload FROM tiempo_muerto WHERE id = 1000");
+  assert.equal(r.data.reporte.linea, "L1-BISEL");
+  assert.equal(r.data.reporte.descripcion, "no avanza");
 
-  r = await api("POST", "/api/operador/reportes/1000/aceptar", null, "op");
+  // El admin sin numero de empleado consulta, pero no puede aceptar: se corta
+  // en Metricas, sin llamar al MES.
+  r = await api("GET", "/api/operador/reportes/482913", null, "admin");
+  assert.equal(r.status, 200);
+  assert.equal(r.data.puedeAceptar, false, "sin numero no se ofrece aceptar");
+  assert.match(r.data.motivo, /no tiene numero de empleado/);
+  let antesMes = mesLlamadas.length;
+  r = await api("POST", "/api/operador/reportes/482913/aceptar", null, "admin");
+  assert.equal(r.status, 403);
+  assert.equal(r.data.code, "TECNICO_SIN_NUMERO");
+  assert.equal(mesLlamadas.length, antesMes, "no se manda al MES una peticion sin identidad");
+  r = await api("POST", "/api/operador/reportes/482913/aceptar", null, "op");
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.estado, "EN_ATENCION");
-  assert.equal(r.data.aceptadoPor, USUARIOS.op.nombre);
   assert.equal(r.data.tecnicoNumeroEmpleado, "1382");
   atencionId = r.data.id;
+  const acept = mesLlamadas.filter((c) => c.url.endsWith("/aceptar")).pop();
+  assert.equal(acept.actor, "1382", "el MES recibe el numero de empleado del tecnico");
+  assert.equal((await api("POST", "/api/operador/reportes/482913/aceptar", null, "op")).status, 409);
 
-  // Doble aceptacion (mismo u otro usuario) -> 409.
-  assert.equal((await api("POST", "/api/operador/reportes/1000/aceptar", null, "op")).status, 409);
-  assert.equal((await api("POST", "/api/operador/reportes/1000/aceptar", null, "admin")).status, 409);
-  r = await api("GET", "/api/operador/reportes/1000", null, "op");
-  assert.equal(r.data.puedeAceptar, false);
-  assert.equal(r.data.atencion.id, atencionId);
+  // Otro operador (usuario + PIN) VE la atencion en curso y puede tomar continuidad.
+  await require("../lib/auth").createUser({ username: "op_otro", pin: "5173", rol: "mantenimiento_op", nombre: "Otro", numeroEmpleado: "2000" });
+  const otro = (await login("op_otro", "5173")).cookie;
+  r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, { headers: { Cookie: otro } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.esParticipante, false);
+  assert.equal(r.data.puedeTomarContinuidad, true);
+  assert.equal(r.data.puedeFinalizar, true, "cualquier tecnico autenticado puede finalizar");
+  assert.equal(r.data.puedeOperar, false, "sin continuidad no pausa ni reanuda");
+  r = await api("GET", "/api/operador/atenciones", null, { headers: { Cookie: otro } });
+  assert.equal(r.data.enCurso.length, 1, "aparece en 'paros en atencion por otros tecnicos'");
 
-  // Validaciones de la captura.
-  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: " " }, "op")).status, 400);
+  // El tecnico que inicio puede operar; el admin sin numero solo consulta.
+  r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op");
+  assert.equal(r.data.puedeOperar, true);
+  assert.equal(r.data.esParticipante, true);
+  r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, "admin");
+  assert.equal(r.status, 200, "el admin ve la atencion (monitoreo)");
+  assert.equal(r.data.puedeOperar, false, "admin sin numero: solo lectura");
+  assert.equal(r.data.tecnicoNumeroEmpleado, "1382");
+  // Un admin CON numero que no participa ve la atencion pero no la pausa.
+  await require("../lib/auth").createUser({ username: "admin_tec", password: "admin-tec-123", rol: "mantenimiento_admin", nombre: "Admin Tecnico", numeroEmpleado: "3000" });
+  const adminTec = { headers: { Cookie: (await login("admin_tec", "admin-tec-123")).cookie } };
+  r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, adminTec);
+  assert.equal(r.data.puedeOperar, false);
+
+  // Catalogo de categorias (del MES).
+  r = await api("GET", "/api/operador/catalogos", null, "op");
+  assert.equal(r.status, 200);
+  assert.ok(r.data.categorias.some((c) => c.codigo === "sensor"));
+
+  // Acciones de tecnico rechazadas en Metricas, antes del MES.
+  antesMes = mesLlamadas.length;
+  for (const [quien, code] of [["admin", "TECNICO_SIN_NUMERO"], [adminTec, "TECNICO_NO_PARTICIPA"]]) {
+    for (const [accion, body] of [["espera-externa", { nota: "x" }], ["reanudar", null]]) {
+      r = await api("POST", `/api/operador/atenciones/${atencionId}/${accion}`, body, quien);
+      assert.equal(r.status, 403, `${accion}: ${JSON.stringify(r.data)}`);
+      assert.equal(r.data.code, code);
+    }
+  }
+  assert.ok(!mesLlamadas.slice(antesMes).some((c) => c.method === "POST"), "ninguna accion rechazada llego al MES");
+
+  // Espera externa y reanudar.
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/espera-externa`, { nota: "se fabrica pieza" }, "op");
+  assert.equal(r.data.estado, "EN_ESPERA_EXTERNA");
+  r = await api("GET", "/api/operador/atenciones", null, "op");
+  assert.equal(r.data.abiertas.length, 1, "la atencion en espera sigue en curso");
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/reanudar`, null, "op");
+  assert.equal(r.data.estado, "EN_ATENCION");
+  assert.equal(r.data.esperaExterna.minutos, 7);
+
+  // Validaciones tempranas (el MES vuelve a validar).
   const foto = (tipo, name = `${tipo}.png`, buf = PNG) => ({ tipo, name, base64: buf.toString("base64") });
-  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x", fotos: [foto("antes"), foto("despues"), foto("antes")] }, "op")).status, 400, "max 2 fotos");
-  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x", fotos: [foto("antes", "a.gif")] }, "op")).status, 400, "solo jpg/png");
-  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x", fotos: [foto("antes", "a.png", Buffer.alloc(300, 1))] }, "op")).status, 400, "contenido que no es imagen");
+  const base = { categoria: "sensor", problemaDetectado: "Sensor sucio", actionTaken: "Se limpio", fotos: [foto("antes"), foto("despues")] };
+  const fin = (extra) => api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { ...base, ...extra }, "op");
+  assert.equal((await fin({ categoria: "" })).status, 400, "categoria obligatoria");
+  assert.equal((await fin({ problemaDetectado: " " })).status, 400, "problema obligatorio");
+  assert.equal((await fin({ actionTaken: "" })).status, 400, "trabajo obligatorio");
+  assert.equal((await fin({ fotos: [foto("antes")] })).status, 400, "foto despues obligatoria");
+  assert.equal((await fin({ fotos: [foto("antes", "a.gif"), foto("despues")] })).status, 400, "solo jpg/png");
+  assert.equal((await fin({ fotos: [foto("antes"), foto("despues"), foto("antes")] })).status, 400, "max 2 fotos");
 
-  // Otro operador no ve ni finaliza la atencion ajena.
-  await require("../lib/auth").createUser({ username: "op_otro", password: "op-otro-123", rol: "mantenimiento_op", nombre: "Otro" });
-  const otro = (await login("op_otro", "op-otro-123")).cookie;
-  assert.equal((await api("GET", `/api/operador/atenciones/${atencionId}`, null, { headers: { Cookie: otro } })).status, 404);
-  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x" }, { headers: { Cookie: otro } })).status, 404);
+  // Finalizar sin numero de empleado -> 403 sin llegar al MES.
+  antesMes = mesLlamadas.length;
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, base, "admin");
+  assert.equal(r.status, 403);
+  assert.equal(r.data.code, "TECNICO_SIN_NUMERO");
+  assert.match(r.data.error, /no tiene numero de empleado/);
+  assert.ok(!mesLlamadas.slice(antesMes).some((c) => c.url.endsWith("/finalizar")), "no se llamo al MES");
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/continuidad`, null, "admin");
+  assert.equal(r.data.code, "TECNICO_SIN_NUMERO", "sin numero tampoco toma continuidad");
 
-  r = await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "Se cambió sensor ñ", comments: "ok", fotos: [foto("antes"), foto("despues", "d.PNG")] }, "op");
+  // Otro tecnico TOMA CONTINUIDAD: se suma sin borrar a quien inicio.
+  const otroH = { headers: { Cookie: otro } };
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/continuidad`, null, otroH);
   assert.equal(r.status, 200, JSON.stringify(r.data));
-  assert.equal(r.data.estado, "FINALIZADA");
+  assert.equal(mesLlamadas.filter((c) => c.url.endsWith("/continuidad")).pop().actor, "2000", "el MES recibe el numero de quien toma continuidad");
+  assert.deepEqual(r.data.participantes.map((x) => `${x.numeroEmpleado}:${x.roles.join("+")}`), ["1382:inicio", "2000:continuidad"]);
+  assert.equal(r.data.responsableActual, "2000");
+  assert.equal(r.data.tecnicoNumeroEmpleado, "1382", "quien inicio no se sobrescribe");
+  assert.equal(r.data.puedeOperar, true, "ya participa: puede pausar/reanudar");
+
+  // Lo FINALIZA el segundo tecnico (distinto de quien inicio).
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, base, otroH);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.estado, "PENDIENTE_CIERRE");
+  assert.equal(mesLlamadas.filter((c) => c.url.endsWith("/finalizar")).pop().actor, "2000", "finaliza con SU numero de empleado");
+  assert.deepEqual(r.data.participantes.map((x) => `${x.numeroEmpleado}:${x.roles.join("+")}`), ["1382:inicio", "2000:continuidad+finalizo"]);
+  assert.ok(r.data.participantes.every((x) => x.minutosAsignados === 60), "cada participante con el tiempo completo");
   assert.match(r.data.codigoCierre, /^C-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+  assert.equal(r.data.categoria.codigo, "sensor");
+  assert.equal(r.data.problemaDetectado, "Sensor sucio");
+  assert.equal(r.data.actionTaken, "Se limpio");
   assert.equal(r.data.fotos.length, 2);
-  assert.equal(r.data.actionTaken, "Se cambió sensor ñ");
-  assert.ok(r.data.responseTimeMinutes >= 0);
-  assert.ok(r.data.repairTimeMinutes >= 0);
   cierreGenerado = r.data.codigoCierre;
+  // Doble finalizacion: el MES la rechaza (409) y el codigo no cambia.
+  const doble = await fin({ problemaDetectado: "otra cosa" });
+  assert.equal(doble.status, 409, JSON.stringify(doble.data));
+  assert.equal((await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op")).data.codigoCierre, cierreGenerado);
   for (const f of r.data.fotos) {
     const g = await api("GET", f.url, null, "op");
     assert.equal(g.status, 200);
     assert.deepEqual(g.data, PNG);
-    assert.equal((await api("GET", f.url, null, { headers: { Cookie: otro } })).status, 404);
+    assert.equal((await api("GET", f.url, null, { headers: { Cookie: otro } })).status, 200, "la evidencia la ve todo mantenimiento");
   }
-  const fotosDb = await dbq("SELECT ruta FROM paro_atencion_fotos WHERE atencion_id = ?", [atencionId]);
-  assert.equal(fotosDb.length, 2);
-  for (const f of fotosDb) assert.ok(fs.existsSync(path.join(DATA_DIR, f.ruta)));
-
-  // Ya finalizada: no se puede volver a finalizar ni aceptar.
-  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { actionTaken: "x" }, "op")).status, 409);
-  r = await api("GET", "/api/operador/reportes/1000", null, "op");
-  assert.equal(r.data.motivo, "El reporte ya fue atendido");
-
-  // El reporte original (espejo koide) no se modifico.
-  assert.deepEqual(await dbq("SELECT payload FROM tiempo_muerto WHERE id = 1000"), tmAntes);
-
-  // Trazabilidad.
-  const ev = await dbq("SELECT evento, usuario_id FROM paro_atencion_eventos WHERE atencion_id = ? ORDER BY id", [atencionId]);
-  assert.deepEqual(ev.map((e) => e.evento), ["ACEPTADO", "FINALIZADO"]);
-
-  // Un paro recien creado en koide (no esta en la copia local) se encuentra
-  // porque la consulta resincroniza.
-  koideRecords = [{ ...makeRecords(1, 7000)[0], downtime_end: null, downtime_minutes: null }, ...makeRecords(30)];
-  r = await api("GET", "/api/operador/reportes/7000", null, "op");
-  assert.equal(r.status, 200, JSON.stringify(r.data));
-  assert.equal(r.data.puedeAceptar, true);
-  koideRecords = makeRecords(30);
-  await api("GET", "/api/refresh");
+  // Nada se escribe en las tablas locales de atenciones: el MES es la fuente.
+  assert.equal(await count("paro_atenciones"), 0);
+  r = await api("GET", "/api/operador/atenciones", null, "op");
+  assert.equal(r.data.recientes[0].codigoCierre, cierreGenerado);
 });
 
-test("terminal: validar codigo de cierre", async () => {
-  const url = "/api/terminal/cierres/validar";
-  const key = { headers: { "X-Terminal-Key": TERMINAL_KEY } };
-  assert.equal((await api("POST", url, { codigoCierre: cierreGenerado }, null)).status, 401, "sin clave");
-  assert.equal((await api("POST", url, { codigoCierre: cierreGenerado }, "admin")).status, 401, "una sesion de usuario no sirve");
-  assert.equal((await api("POST", url, { codigoCierre: cierreGenerado }, { headers: { "X-Terminal-Key": "otra" } })).status, 401);
-  let r = await api("POST", url, { codigoCierre: "XYZ" }, key);
-  assert.equal(r.status, 400);
-  assert.equal(r.data.valido, false);
-  r = await api("POST", url, { codigoCierre: "C-AAAA-AAAA" }, key);
-  assert.equal(r.status, 404);
-  r = await api("POST", url, { codigoCierre: cierreGenerado, codigoReporte: "1001" }, key);
-  assert.equal(r.status, 409, "codigo de otro reporte");
-
-  // Acepta minusculas / sin guiones.
-  r = await api("POST", url, { codigoCierre: cierreGenerado.toLowerCase().replace(/-/g, ""), codigoReporte: "1000", terminal: "TERM-01" }, key);
+test("admin participante: un mantenimiento_admin con numero atiende paros sin dejar de ser admin", async () => {
+  const auth = require("../lib/auth");
+  const paroPrevio = mesParo; // las pruebas siguientes usan el paro del flujo anterior
+  try {
+  // Asignacion EXPLICITA del numero al admin (validada contra el catalogo del MES).
+  await auth.createUser({ username: "admin_jona", password: "admin-jona-123", rol: "mantenimiento_admin", nombre: "Jonathan (admin)" });
+  let r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "9999" });
+  assert.equal(r.status, 400, "numero inexistente en el MES");
+  r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "7778" });
+  assert.equal(r.status, 400, "numero ya usado por otro usuario");
+  r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "3000" });
+  assert.equal(r.status, 400, "3000 lo tiene admin_tec");
+  await dbq("UPDATE usuarios SET numero_empleado = NULL WHERE username = 'admin_tec'");
+  r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "3000" });
   assert.equal(r.status, 200, JSON.stringify(r.data));
-  assert.equal(r.data.valido, true);
-  assert.equal(r.data.yaConfirmado, false);
-  assert.equal(r.data.estado, "CERRADA");
-  assert.equal(r.data.codigoReporte, "1000");
-  r = await api("POST", url, { codigoCierre: cierreGenerado }, key);
+  assert.equal(r.data.rol, "mantenimiento_admin", "sigue siendo admin");
+  assert.equal((await api("PATCH", "/api/admin/operadores/admin_jona", { pin: "5926" })).status, 400, "al admin no se le pone PIN");
+  const lista = (await api("GET", "/api/admin/operadores")).data.operadores;
+  assert.ok(lista.some((o) => o.username === "admin_jona" && o.rol === "mantenimiento_admin" && o.numeroEmpleado === "3000"));
+  const jona = { headers: { Cookie: (await login("admin_jona", "admin-jona-123")).cookie } };
+  // Sigue siendo administrador: el dashboard y la pantalla de atencion.
+  assert.equal((await api("GET", "/api/data", null, jona)).status, 200, "conserva sus funciones administrativas");
+  assert.ok((await api("GET", "/api/data", null, jona)).data.technicians.some((t) => String(t.employee_number) === "3000" && t.role === "mantenimiento_admin"), "roster con su rol");
+
+  // Paro nuevo: el admin INICIA, un operador toma continuidad y el admin FINALIZA.
+  mesParo = MES_PARO();
+  r = await api("GET", "/api/operador/reportes/482913", null, jona);
+  assert.equal(r.data.puedeAceptar, true, "el admin con numero puede iniciar");
+  r = await api("POST", "/api/operador/reportes/482913/aceptar", null, jona);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const acc = mesLlamadas.filter((c) => c.url.endsWith("/aceptar")).pop();
+  assert.deepEqual([acc.actor, acc.rol], ["3000", "mantenimiento_admin"], "el MES recibe numero + rol mantenimiento_admin");
+  assert.equal(r.data.participantes[0].rolSnapshot, "mantenimiento_admin");
+  assert.equal(r.data.participantes[0].tipoActor, "admin");
+  r = await api("POST", `/api/operador/atenciones/${r.data.id}/continuidad`, null, "op");
   assert.equal(r.status, 200);
-  assert.equal(r.data.yaConfirmado, true, "validar de nuevo es idempotente");
-  const [a] = await dbq("SELECT estado, cierre_confirmado_por FROM paro_atenciones WHERE id = ?", [atencionId]);
-  assert.deepEqual({ ...a }, { estado: "CERRADA", cierre_confirmado_por: "TERM-01" });
-  const ev = await dbq("SELECT evento FROM paro_atencion_eventos WHERE atencion_id = ? ORDER BY id", [atencionId]);
-  assert.deepEqual(ev.map((e) => e.evento), ["ACEPTADO", "FINALIZADO", "CIERRE_VALIDADO"]);
+  assert.deepEqual(r.data.participantes.map((x) => `${x.numeroEmpleado}:${x.tipoActor}`), ["3000:admin", "1382:operador"]);
+  const foto = { tipo: "despues", name: "d.png", base64: PNG.toString("base64") };
+  r = await api("POST", `/api/operador/atenciones/${r.data.id}/finalizar`, { categoria: "sensor", problemaDetectado: "p", actionTaken: "t", fotos: [foto] }, jona);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.estado, "PENDIENTE_CIERRE");
+  assert.equal(mesLlamadas.filter((c) => c.url.endsWith("/finalizar")).pop().rol, "mantenimiento_admin");
+  assert.ok(r.data.participantes.every((x) => x.minutosAsignados === 60), "tiempo completo para cada participante");
+  const id = r.data.id;
+  // Metricas NO cierra el paro (solo Capture Terminal con el codigo).
+  assert.equal((await api("POST", `/api/operador/atenciones/${id}/cerrar`, { codigoCierre: r.data.codigoCierre }, jona)).status, 404);
+  assert.equal((await api("POST", "/api/terminal/cierres/validar", { codigoCierre: r.data.codigoCierre }, jona)).status, 410);
+
+  // Cambiar despues su rol NO cambia lo historico (rol_snapshot del MES).
+  await dbq("UPDATE usuarios SET rol = 'mantenimiento_op' WHERE username = 'admin_jona'");
+  r = await api("GET", `/api/operador/atenciones/${id}`, null, "op");
+  assert.equal(r.data.participantes.find((x) => x.numeroEmpleado === "3000").rolSnapshot, "mantenimiento_admin");
+  await dbq("UPDATE usuarios SET rol = 'mantenimiento_admin' WHERE username = 'admin_jona'");
+
+  // Admin SIN numero: solo consulta (no se manda al MES).
+  const antes = mesLlamadas.length;
+  mesParo = MES_PARO();
+  r = await api("POST", "/api/operador/reportes/482913/aceptar", null, "admin");
+  assert.equal(r.data.code, "TECNICO_SIN_NUMERO");
+  assert.equal(mesLlamadas.slice(antes).filter((c) => c.method === "POST").length, 0);
+  // Quitar el numero al admin (explicito) lo deja en solo consulta.
+  assert.equal((await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "" })).data.numeroEmpleado, null);
+  } finally {
+    mesParo = paroPrevio;
+  }
+});
+
+test("terminal: la validacion del codigo de cierre ya no vive aqui (410 -> KOIDE MES)", async () => {
+  const r = await api("POST", "/api/terminal/cierres/validar", { codigoCierre: cierreGenerado }, null);
+  assert.equal(r.status, 410);
+  assert.equal(r.data.code, "VALIDACION_EN_MES");
+});
+
+test("sin KOIDE MES disponible: el operador recibe un error claro y el dashboard conserva su copia", async () => {
+  const prev = appEnv;
+  await stopApp();
+  appEnv = { ...prev, KOIDE_GENERAL_URL: "http://127.0.0.1:9" };
+  await startApp();
+  try {
+    const r = await api("GET", "/api/operador/reportes/482913", null, "op");
+    assert.equal(r.status, 503);
+    assert.match(r.data.error, /KOIDE MES no disponible/);
+    const d = await api("GET", "/api/data");
+    assert.equal(d.status, 200);
+    assert.ok(d.data.count > 0, "sigue sirviendo la ultima copia");
+    const h = await api("GET", "/api/health", null, null);
+    assert.ok(h.data.lastError);
+  } finally {
+    await stopApp();
+    appEnv = prev;
+    await startApp();
+  }
 });
 
 /* ---------- Migracion repetida ---------- */
@@ -822,7 +1139,7 @@ test("persistencia de sesiones y atenciones tras reiniciar", async () => {
   await startApp();
   const r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op");
   assert.equal(r.status, 200, "la sesion sigue valida despues de reiniciar");
-  assert.equal(r.data.estado, "CERRADA");
+  assert.equal(r.data.estado, "PENDIENTE_CIERRE");
   assert.equal(r.data.codigoCierre, cierreGenerado);
 });
 
