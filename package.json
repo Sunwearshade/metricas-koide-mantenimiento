@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "stop": "node scripts/detener.js",
     "db:setup": "node scripts/db-setup.js",
     "db:dump": "node scripts/db-dump.js",
     "migrate": "node scripts/migrate-json-to-mysql.js",

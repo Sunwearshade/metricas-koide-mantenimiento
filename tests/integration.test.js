@@ -169,6 +169,19 @@ function mesParticipa(numero, evento) {
 }
 const PERSONAL_MES = ["1382", "2000", "3000", "7777", "7778"].map((n) => ({ numeroEmpleado: n, nombre: `TECNICO ${n}` }));
 const mesFotos = new Map();
+// Contramedidas por acumulacion (MES mig 090): recomendaciones y registro.
+let mesRecomendaciones = [{ clave: "M1|falla_hidraulica", equipo: { id: 1, codigo: "M1", nombre: "MAQ-1", proceso: "CORTE", idMaquina: null, area: null, ubicacion: null },
+  categoria: { codigo: "falla_hidraulica", nombre: "Falla hidráulica" }, horasAcumuladas: 23.6, minutosAcumulados: 1416, paros: 4, parosIds: [1, 2, 3, 4],
+  desde: "2026-09-01T10:00:00.000Z", hasta: "2026-09-20T10:00:00.000Z", umbralHoras: 20, alcanzaUmbral: true, contramedidaPrevia: null,
+  recomendacion: "M1 — Falla hidráulica — 23.6 h acumuladas. Se recomienda programar una contramedida / mantenimiento profundo para esta seccion." }];
+const mesContramedidas = [];
+let mesUmbral = 20; // mtto_parametros.contramedida_umbral_horas
+function mesEvidencia(f, etapa, actor) {
+  const id = mesFotos.size + 1;
+  mesFotos.set(id, Buffer.from(f.base64, "base64"));
+  return { id, tipo: f.tipo, etapa, nombre: f.nombre, descripcion: f.descripcion || null, mime: "image/png", bytes: mesFotos.get(id).length,
+    subidoPor: { numeroEmpleado: actor, usuario: "op", rol: mesRolActual }, creado: new Date().toISOString() };
+}
 
 function startKoide() {
   const srv = http.createServer((req, res) => {
@@ -195,7 +208,46 @@ function startKoide() {
         if (r.startsWith("/compat/downtime-records")) return send(200, mesRecords);
         if (r === "/compat/machines") return send(200, MACHINES);
         if (r === "/equipos") return send(200, { procesos: [{ codigo: "CORTE", migradoMes: true }, { codigo: "CNC", migradoMes: false }], equipos: [] });
-        if (r === "/catalogos") return send(200, { categorias: [{ codigo: "sensor", nombre: "Sensor" }, { codigo: "falla_mecanica", nombre: "Falla mecánica" }], personal: PERSONAL_MES });
+        if (r === "/catalogos") return send(200, { categorias: [{ codigo: "sensor", nombre: "Sensor" }, { codigo: "falla_mecanica", nombre: "Falla mecánica" }], personal: PERSONAL_MES, procesos: [{ codigo: "CORTE", nombre: "Corte" }, { codigo: "CNC", nombre: "CNC" }] });
+        // Historico general (mig 090): cualquier paro terminado; filtros basicos.
+        if (r.startsWith("/historico")) {
+          const sp = new URL(url, "http://x").searchParams;
+          const filas = [mesParo].filter((p) => ["CERRADO", "ANULADO"].includes(p.estado) || sp.get("estado") === "todos")
+            .filter((p) => !sp.get("equipo") || p.equipo.codigo === sp.get("equipo"))
+            .map((p) => ({ ...p, tecnicos: p.participantes, eventosCount: 5, tiempoTotalMin: p.tiempos.paro_min, esperaExternaMin: p.tiempos.espera_externa_min, linea: p.equipo.idMaquina }));
+          return send(200, { total: filas.length, limite: Number(sp.get("limite") || 200), offset: 0, filas });
+        }
+        // Misma regla que el MES (alcanzaUmbral): horas >= umbral de mtto_parametros.
+        if (r === "/contramedidas/recomendaciones") {
+          const recs = mesRecomendaciones.filter((x) => x.horasAcumuladas >= mesUmbral).map((x) => ({ ...x, umbralHoras: mesUmbral, alcanzaUmbral: true }));
+          return send(200, { umbralHoras: mesUmbral, total: recs.length, recomendaciones: recs });
+        }
+        if (r === "/contramedidas" && req.method === "POST") {
+          if (!["mantenimiento_op", "mantenimiento_admin"].includes(mesRolActual)) return send(403, { error: "rol", code: "ACTOR_ROL_INVALIDO" });
+          if (b.equipo === "NOEXISTE") return send(400, { error: "Equipo de mantenimiento invalido o no indicado", code: "EQUIPO_INVALIDO" });
+          const cm = { id: mesContramedidas.length + 1, estado: "PROGRAMADA", origen: b.origen || "acumulacion", equipo: { codigo: b.equipo }, categoria: b.categoria ? { codigo: b.categoria } : null,
+            horasAcumuladas: 23.6, parosConsiderados: 4, umbralHoras: 20, referenciaExterna: b.referenciaExterna || null, descripcion: b.descripcion || null, responsable: b.responsable || null,
+            fechaProgramada: b.fechaProgramada || null, creadoPor: { usuario: req.headers["x-actor-usuario"] || null, rol: mesRolActual } };
+          mesContramedidas.push(cm);
+          mesRecomendaciones = mesRecomendaciones.filter((x) => !(x.equipo.codigo === b.equipo && (!b.categoria || x.categoria.codigo === b.categoria)));
+          return send(201, cm);
+        }
+        let mc = r.match(/^\/contramedidas\/(\d+)$/);
+        if (mc && req.method === "PATCH") {
+          const cm = mesContramedidas.find((x) => x.id === Number(mc[1]));
+          if (!cm) return send(404, { error: "Contramedida no encontrada" });
+          Object.assign(cm, b);
+          return send(200, cm);
+        }
+        if (r === "/contramedidas") return send(200, { contramedidas: mesContramedidas });
+        if (r === "/parametros") return send(200, { parametros: [{ clave: "contramedida_umbral_horas", valor: String(mesUmbral) }] });
+        if (r === "/parametros/contramedida-umbral" && req.method === "PUT") {
+          const n = Number(b.horas);
+          if (!Number.isFinite(n) || n <= 0) return send(400, { error: "Umbral invalido (horas > 0)" });
+          const anterior = mesUmbral;
+          mesUmbral = n;
+          return send(200, { clave: "contramedida_umbral_horas", valor: String(n), anterior: String(anterior) });
+        }
         let m = r.match(/^\/paros\/por-codigo\/(\d+)(\/aceptar)?$/);
         if (m) {
           if (m[1] !== mesParo.codigoAtencion) return send(404, { error: "No existe un paro con ese codigo de atencion" });
@@ -216,7 +268,7 @@ function startKoide() {
         if (!m || Number(m[1]) !== mesParo.id) return send(404, { error: "Paro de mantenimiento no encontrado" });
         if (!m[2]) return send(200, mesParo);
         // Mismas reglas de identidad que el MES real (mttoParoService).
-        if (["/espera-externa", "/reanudar", "/finalizar", "/continuidad"].includes(m[2])) {
+        if (["/espera-externa", "/reanudar", "/finalizar", "/continuidad", "/evidencias"].includes(m[2]) && req.method === "POST") {
           if (!actor) return send(403, { error: "El usuario de mantenimiento no tiene numero de empleado", code: "TECNICO_SIN_NUMERO" });
         }
         if (["/espera-externa", "/reanudar"].includes(m[2])
@@ -230,16 +282,28 @@ function startKoide() {
         }
         if (m[2] === "/espera-externa") { mesParo.estado = "EN_ESPERA_EXTERNA"; mesParo.esperaExterna = { enCurso: true, inicio: new Date().toISOString(), minutos: 0, nota: b.nota || null }; return send(200, mesParo); }
         if (m[2] === "/reanudar") { mesParo.estado = "EN_ATENCION"; mesParo.esperaExterna = { ...mesParo.esperaExterna, enCurso: false, minutos: 7 }; return send(200, mesParo); }
+        // (mig 090) evidencia durante la atencion.
+        if (m[2] === "/evidencias" && req.method === "POST") {
+          if (!["EN_ATENCION", "EN_ESPERA_EXTERNA"].includes(mesParo.estado)) return send(409, { error: "La atencion ya fue finalizada", code: "YA_APLICADO" });
+          if ((mesParo.evidencias.length + (b.fotos || []).length) > 6) return send(400, { error: "Maximo 6 evidencias por paro", code: "EVIDENCIA_INVALIDA" });
+          for (const f of b.fotos || []) mesParo.evidencias.push(mesEvidencia(f, "atencion", actor));
+          return send(201, mesParo);
+        }
+        // (mig 090) finalizar = CERRAR el paro (sin codigo de cierre).
         if (m[2] === "/finalizar") {
-          if (mesParo.estado !== "EN_ATENCION") return send(409, { error: "La atencion ya fue finalizada" });
-          if (!(b.fotos || []).some((f) => f.tipo === "despues")) return send(400, { error: "foto despues obligatoria", code: "EVIDENCIA_REQUERIDA" });
-          mesParo.evidencias = b.fotos.map((f, i) => { mesFotos.set(i + 1, Buffer.from(f.base64, "base64")); return { id: i + 1, tipo: f.tipo, nombre: f.nombre, mime: "image/png" }; });
+          if (mesParo.estado === "CERRADO") return send(409, { error: "El paro ya esta cerrado", code: "YA_APLICADO" });
+          if (mesParo.estado !== "EN_ATENCION") return send(409, { error: "La atencion no esta en curso" });
+          const yaHay = mesParo.evidencias.some((e) => e.tipo === "despues");
+          if (!yaHay && !(b.fotos || []).some((f) => f.tipo === "despues")) return send(400, { error: "foto despues obligatoria", code: "EVIDENCIA_REQUERIDA" });
+          for (const f of b.fotos || []) mesParo.evidencias.push(mesEvidencia(f, "finalizacion", actor));
+          const ahora = new Date().toISOString();
           Object.assign(mesParo, {
-            estado: "PENDIENTE_CIERRE", categoria: { codigo: b.categoria, nombre: "Sensor" }, problemaDetectado: b.problemaDetectado,
-            accionRealizada: b.accionRealizada, comentarios: b.comentarios, finalizadoEn: new Date().toISOString(),
-            finalizadoPor: { numeroEmpleado: actor }, codigoCierre: "C-ABCD-EF23",
+            estado: "CERRADO", categoria: { codigo: b.categoria, nombre: "Sensor" }, problemaDetectado: b.problemaDetectado,
+            accionRealizada: b.accionRealizada, comentarios: b.comentarios, finalizadoEn: ahora,
+            finalizadoPor: { numeroEmpleado: actor }, codigoCierre: null,
+            cierre: { en: ahora, modo: "finalizacion", recibidoPor: null, anuladoMotivo: null },
             participantes: mesParo.participantes, historialAtencion: mesParo.historialAtencion,
-            tiempos: { respuesta_min: 12, reparacion_min: 40, paro_min: null, entrega_min: null, espera_externa_min: 7 },
+            tiempos: { respuesta_min: 12, reparacion_min: 40, paro_min: 60, entrega_min: null, espera_externa_min: 7 },
           });
           mesParticipa(actor, "FINALIZA_ATENCION");
           return send(200, mesParo);
@@ -329,6 +393,10 @@ function childEnv(extra = {}) {
     KOIDE_PASSWORD: "clave-koide",
     KOIDE_GENERAL_TOKEN: MES_TOKEN,
     KOIDE_GENERAL_REFRESH_MIN: "0",
+    // La suite general prueba la integracion con KOIDE MES; el modo local
+    // (desarrollo) tiene su propia prueba que reinicia el servidor.
+    CONTRAMEDIDAS_FUENTE: "mes",
+    CONTRAMEDIDAS_AUTO_MS: "0",
     LOG_DIR: path.join(TMP, "logs"),
     ...extra,
   };
@@ -530,6 +598,479 @@ test("contramedidas: crear, editar, completar, fotos, borrar", async () => {
   assert.equal((await api("GET", "/api/contramedidas")).data.length, 2);
   assert.equal(await count("contramedida_fotos", `WHERE contramedida_id = '${id}'`), 0);
   assert.equal((await api("PUT", "/api/contramedidas/noexiste", {})).status, 404);
+
+  // Recomendaciones por ACUMULACION de fallas (KOIDE MES, cualquier proceso).
+  r = await api("GET", "/api/contramedidas/recomendaciones");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.umbralHoras, 20);
+  assert.equal(r.data.recomendaciones.length, 1);
+  assert.equal(r.data.recomendaciones[0].equipo.codigo, "M1");
+  assert.match(r.data.recomendaciones[0].recomendacion, /23\.6 h acumuladas/);
+  // Programar la contramedida desde la recomendacion: PRIMERO se registra en el
+  // MES (fija la cobertura), luego la copia local con el enlace.
+  const antesMes = mesLlamadas.length;
+  r = await api("POST", "/api/contramedidas", { tipo: "Falla hidráulica", maquina: "M1", maquinaNombre: "MAQ-1", responsable: "Ana", fechaLimite: "2026-10-05", estado: "Pendiente",
+    recomendacionClave: "M1|falla_hidraulica", categoriaCodigo: "falla_hidraulica", descripcion: "Mantenimiento profundo hidraulico" });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.mesId, 1);
+  assert.equal(r.data.recomendacionClave, "M1|falla_hidraulica");
+  const reg = mesLlamadas.slice(antesMes).find((c) => c.method === "POST" && c.url.endsWith("/contramedidas"));
+  assert.ok(reg, "se registro en el MES");
+  assert.equal(reg.rol, "mantenimiento_admin");
+  const cmMes = mesContramedidas[0];
+  assert.equal(cmMes.equipo.codigo, "M1");
+  assert.equal(cmMes.categoria.codigo, "falla_hidraulica");
+  assert.equal(cmMes.referenciaExterna, r.data.id, "referencia cruzada al id de metricas");
+  assert.equal(cmMes.fechaProgramada, "2026-10-05");
+  const idReco = r.data.id;
+  r = await api("GET", "/api/contramedidas/recomendaciones");
+  assert.equal(r.data.recomendaciones.length, 0, "atendida: la recomendacion deja de aparecer");
+  const guardada = (await api("GET", "/api/contramedidas")).data.find((c) => c.id === idReco);
+  assert.equal(guardada.mesId, 1, "el enlace persiste en MySQL");
+  // Completarla refleja el estado en el MES.
+  r = await api("PUT", `/api/contramedidas/${idReco}`, { estado: "Completado", trabajoRealizado: "Bomba cambiada" });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.mesSync, true);
+  assert.equal(cmMes.estado, "COMPLETADA");
+  assert.equal(cmMes.trabajoRealizado, "Bomba cambiada");
+  // Si el MES rechaza, no se guarda nada local.
+  const nLocal = (await api("GET", "/api/contramedidas")).data.length;
+  r = await api("POST", "/api/contramedidas", { tipo: "Falla común", maquina: "NOEXISTE", recomendacionClave: "NOEXISTE|sensor", categoriaCodigo: "sensor" });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /KOIDE MES/);
+  assert.equal((await api("GET", "/api/contramedidas")).data.length, nLocal);
+  await api("DELETE", `/api/contramedidas/${idReco}`);
+});
+
+// Recomendacion del MES para las pruebas de programacion (equipo + categoria).
+function recoMes(codigo, catCodigo, catNombre, horas, previa = null) {
+  return { clave: `${codigo}|${catCodigo}`, equipo: { id: 100 + mesRecomendaciones.length, codigo, nombre: `LINEA ${codigo}`, proceso: "CORTE", idMaquina: null, area: null, ubicacion: null },
+    categoria: { codigo: catCodigo, nombre: catNombre }, horasAcumuladas: horas, minutosAcumulados: Math.round(horas * 60), paros: 3, parosIds: [],
+    desde: "2026-09-01T10:00:00.000Z", hasta: "2026-09-20T10:00:00.000Z", umbralHoras: mesUmbral, alcanzaUmbral: true, contramedidaPrevia: previa,
+    recomendacion: `${codigo} — ${catNombre} — ${horas} h acumuladas. Se recomienda programar una contramedida / mantenimiento profundo.` };
+}
+
+function fechaLocalTest(offset = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+test("contramedidas: umbral configurable, programacion automatica y aprobacion", async () => {
+  const reco = async () => (await api("GET", "/api/contramedidas/recomendaciones")).data;
+  const codigos = async () => (await reco()).recomendaciones.map((x) => x.equipo.codigo).sort();
+  const ejecutar = async () => {
+    const r = await api("POST", "/api/contramedidas/programacion-automatica", {});
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data;
+  };
+  const propuestaDe = async (codigo) => (await dbq("SELECT * FROM contramedidas_propuestas WHERE equipo_codigo = ?", [codigo]));
+  const creadasLocal = [];
+
+  // ---- Configuracion del sistema: el umbral se lee de KOIDE MES (unica fuente) ----
+  let r = await api("GET", "/api/configuracion");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const par = (d, clave) => d.parametros.find((x) => x.clave === clave);
+  assert.equal(par(r.data, "contramedida_umbral_horas").valor, 20, "valor inicial = comportamiento actual");
+  assert.equal(par(r.data, "contramedida_umbral_horas").fuente, "mes");
+  assert.deepEqual(par(r.data, "programacion_dias_permitidos").valor, [1, 2, 3, 4, 5, 6]);
+  assert.equal(par(r.data, "programacion_horizonte_dias").valor, 14);
+  assert.equal(par(r.data, "programacion_max_por_dia").valor, 1);
+  assert.equal(par(r.data, "programacion_automatica_activa").valor, true);
+
+  // Caso A / B: umbral 20
+  mesRecomendaciones = [recoMes("LA", "electrica", "Eléctrica", 19.9), recoMes("LB", "electrica", "Eléctrica", 20)];
+  assert.deepEqual(await codigos(), ["LB"], "A: 19.9 h no recomienda · B: 20 h recomienda");
+
+  // Validacion y permisos del cambio
+  assert.equal((await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 0 } })).status, 400);
+  assert.equal((await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: "abc" } })).status, 400);
+  assert.equal((await api("PUT", "/api/configuracion", { valores: { programacion_dias_permitidos: [] } })).status, 400);
+  assert.equal((await api("PUT", "/api/configuracion", { valores: { no_existe: 1 } })).status, 400);
+  assert.equal(mesUmbral, 20, "un cambio invalido no llega al MES");
+  assert.equal((await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 30 } }, "op")).status, 403);
+
+  // Caso C / D: umbral 30 (cambiado desde metricos -> se guarda en el MES)
+  r = await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 30 } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(mesUmbral, 30);
+  assert.deepEqual(r.data.cambios, [{ clave: "contramedida_umbral_horas", anterior: 20, nuevo: 30 }]);
+  let [aud] = await dbq("SELECT * FROM auditoria WHERE entidad = 'configuracion' AND entidad_id = 'contramedida_umbral_horas' ORDER BY id DESC LIMIT 1");
+  assert.equal(aud.usuario, USUARIOS.admin.username);
+  assert.equal(aud.valor_anterior, "20");
+  assert.equal(aud.valor_nuevo, "30");
+  mesRecomendaciones = [recoMes("LC", "mecanica", "Mecánica", 25), recoMes("LD", "mecanica", "Mecánica", 30)];
+  assert.deepEqual(await codigos(), ["LD"], "C: 25 h con umbral 30 no recomienda · D: 30 h recomienda");
+  assert.equal((await reco()).umbralHoras, 30);
+
+  // De vuelta a 20 y parametros locales deterministas para la busqueda.
+  r = await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 20, programacion_dias_permitidos: [1, 2, 3, 4, 5, 6, 7], programacion_horizonte_dias: 3, programacion_max_por_dia: 1 } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.cambios.length, 3, "max_por_dia ya valia 1: sin cambio, sin auditoria");
+  const [cfgRow] = await dbq("SELECT valor, actualizado_por FROM configuracion_sistema WHERE clave = 'programacion_horizonte_dias'");
+  assert.equal(cfgRow.valor, "3");
+  assert.equal(cfgRow.actualizado_por, USUARIOS.admin.username);
+  r = await api("GET", "/api/auditoria?entidad=configuracion");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.map((x) => x.entidadId).sort(), ["contramedida_umbral_horas", "contramedida_umbral_horas", "programacion_dias_permitidos", "programacion_horizonte_dias"],
+    "20->30, 30->20, dias y horizonte");
+
+  // Dias del horizonte (manana .. manana+2) y los que ya ocupan contramedidas abiertas.
+  const dias = [1, 2, 3].map(fechaLocalTest);
+  const ocupados = new Set((await api("GET", "/api/contramedidas")).data.filter((c) => c.estado !== "Completado" && c.fechaLimite).map((c) => c.fechaLimite));
+  const libres = dias.filter((d) => !ocupados.has(d));
+  assert.ok(libres.length >= 2, "el escenario necesita al menos 2 dias libres");
+
+  // ---- Caso E: existe fecha libre -> propuesta automatica pendiente de aprobacion ----
+  mesRecomendaciones = [recoMes("L4", "electrica", "Eléctrica", 27.5)];
+  let e = await ejecutar();
+  assert.equal(e.creadas.length, 1);
+  assert.equal(e.creadas[0].fechaPropuesta, libres[0], "primera fecha disponible del horizonte");
+  let [p4] = await propuestaDe("L4");
+  assert.equal(p4.estado, "PENDIENTE_APROBACION");
+  assert.equal(p4.origen, "AUTOMATICA");
+  assert.equal(p4.ciclo, "L4|electrica#0");
+  assert.equal(Number(p4.horas_acumuladas), 27.5);
+  assert.equal(mesContramedidas.filter((c) => c.equipo.codigo === "L4").length, 0, "NO se confirma ni se registra en el MES sin aprobacion");
+  let rl = (await reco()).recomendaciones.find((x) => x.equipo.codigo === "L4");
+  assert.equal(rl.programacion.estado, "PENDIENTE_APROBACION");
+  assert.equal(rl.programacion.fechaPropuesta, libres[0]);
+  r = await api("GET", "/api/contramedidas/propuestas?estado=PENDIENTE_APROBACION");
+  assert.equal(r.data.length, 1);
+  assert.equal(r.data[0].vigente, true);
+
+  // ---- Caso G: ya hay propuesta pendiente para la misma condicion -> no duplica ----
+  e = await ejecutar();
+  assert.equal(e.creadas.length, 0);
+  mesRecomendaciones[0].horasAcumuladas = 31; // siguen sumando horas: MISMA acumulacion (mismo ciclo)
+  e = await ejecutar();
+  assert.equal(e.creadas.length, 0);
+  assert.equal(await count("contramedidas_propuestas", "WHERE equipo_codigo = 'L4'"), 1);
+
+  // ---- Caso F: sin fecha libre -> no se programa; queda la programacion manual ----
+  for (const d of libres.slice(1)) {
+    r = await api("POST", "/api/contramedidas", { tipo: "Preventivo", maquina: "X9", responsable: "R", fechaLimite: d, estado: "Pendiente" });
+    creadasLocal.push(r.data.id);
+  }
+  mesRecomendaciones.push(recoMes("L5", "neumatica", "Neumática", 24.8));
+  e = await ejecutar();
+  assert.equal(e.creadas.length, 0);
+  assert.deepEqual(e.sinFecha.map((x) => x.equipo), ["L5"]);
+  assert.equal(await count("contramedidas_propuestas", "WHERE equipo_codigo = 'L5'"), 0, "no inventa una fecha");
+  rl = (await reco()).recomendaciones.find((x) => x.equipo.codigo === "L5");
+  assert.equal(rl.programacion.estado, "SIN_FECHA");
+  // Programar manualmente sigue funcionando igual y queda como confirmada / manual.
+  r = await api("POST", "/api/contramedidas", { tipo: "Neumática", maquina: "L5", maquinaNombre: "LINEA L5", responsable: "Ana", fechaLimite: fechaLocalTest(10), estado: "Pendiente",
+    recomendacionClave: "L5|neumatica", recomendacionCiclo: rl.ciclo, categoriaCodigo: "neumatica", descripcion: rl.recomendacion });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  creadasLocal.push(r.data.id);
+  let [p5] = await propuestaDe("L5");
+  assert.equal(p5.estado, "CONFIRMADA");
+  assert.equal(p5.origen, "MANUAL");
+  assert.equal(p5.fecha_confirmada, fechaLocalTest(10));
+  assert.equal(p5.contramedida_id, r.data.id);
+  assert.ok(!(await codigos()).includes("L5"), "atendida: deja de aparecer (cobertura del MES)");
+
+  // ---- Reprogramar: solo a una fecha disponible y con motivo ----
+  const id4 = Number(p4.id);
+  r = await api("GET", `/api/contramedidas/propuestas/${id4}/fechas-disponibles`);
+  assert.deepEqual(r.data.fechas, [libres[0]], "su propio dia sigue disponible para ella");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/reprogramar`, { fecha: libres[1], motivo: "Paro de linea programado" })).status, 409, "dia lleno");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/reprogramar`, { fecha: libres[0], motivo: "x" })).status, 400, "misma fecha");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/reprogramar`, { fecha: fechaLocalTest(0), motivo: "Hoy mismo" })).status, 409, "nunca hoy");
+  await api("DELETE", `/api/contramedidas/${creadasLocal.shift()}`); // se libera libres[1]
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/reprogramar`, { fecha: libres[1] })).status, 400, "sin motivo");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/reprogramar`, { fecha: libres[1], motivo: "Esperar refacción" }, "op")).status, 403);
+  r = await api("POST", `/api/contramedidas/propuestas/${id4}/reprogramar`, { fecha: libres[1], motivo: "Esperar refacción" });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.fechaPropuesta, libres[1]);
+  assert.equal(r.data.reprogramaciones, 1);
+  assert.equal(r.data.estado, "PENDIENTE_APROBACION", "reprogramar no confirma");
+  [aud] = await dbq("SELECT * FROM auditoria WHERE accion = 'CONTRAMEDIDA_REPROGRAMADA' AND entidad_id = ?", [String(id4)]);
+  assert.match(aud.valor_anterior, new RegExp(libres[0]));
+  assert.match(aud.valor_nuevo, new RegExp(libres[1]));
+  assert.match(aud.detalle, /Esperar refacción/);
+
+  // ---- Caso H: el administrador aprueba -> confirmada ----
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/aprobar`, {}, "op")).status, 403);
+  r = await api("POST", `/api/contramedidas/propuestas/${id4}/aprobar`, {});
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.propuesta.estado, "CONFIRMADA");
+  assert.equal(r.data.propuesta.fechaConfirmada, libres[1]);
+  assert.equal(r.data.propuesta.resueltaPor, USUARIOS.admin.username);
+  assert.ok(r.data.propuesta.resueltaEn);
+  const cm4 = r.data.contramedida;
+  creadasLocal.push(cm4.id);
+  assert.equal(cm4.fechaLimite, libres[1], "queda en el calendario de seguimiento");
+  assert.equal(cm4.recomendacionClave, "L4|electrica");
+  const mes4 = mesContramedidas.find((c) => c.equipo.codigo === "L4");
+  assert.ok(mes4, "se registro en el MES por el mismo camino que la programacion manual");
+  assert.equal(mes4.fechaProgramada, libres[1]);
+  assert.equal(mes4.categoria.codigo, "electrica");
+  assert.ok(!(await codigos()).includes("L4"), "la acumulacion queda cubierta (se reinicia como antes)");
+  r = await api("GET", "/api/contramedidas/propuestas?estado=CONFIRMADA");
+  const conf = r.data.find((x) => x.id === id4);
+  assert.equal(conf.origen, "AUTOMATICA");
+  assert.equal(conf.categoria.nombre, "Eléctrica");
+  assert.ok(conf.detectadaEn);
+  assert.ok(r.data.some((x) => x.equipo.codigo === "L5" && x.origen === "MANUAL"), "confirmadas manuales y automaticas juntas");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id4}/aprobar`, {})).status, 409, "no se aprueba dos veces");
+  assert.equal(mesContramedidas.filter((c) => c.equipo.codigo === "L4").length, 1);
+  // Nueva acumulacion posterior (nuevo ciclo: contramedida previa = la aprobada) -> nueva propuesta.
+  mesRecomendaciones.push(recoMes("L4", "electrica", "Eléctrica", 21, { id: mes4.id, cubreHasta: new Date().toISOString() }));
+  await api("PUT", "/api/configuracion", { valores: { programacion_horizonte_dias: 30 } });
+  e = await ejecutar();
+  assert.equal(e.creadas.length, 1);
+  assert.equal(e.creadas[0].ciclo, `L4|electrica#${mes4.id}`);
+  const idNuevoCiclo = e.creadas[0].id;
+
+  // ---- Caso I: el administrador rechaza -> rechazada, sin crear otra de inmediato ----
+  mesRecomendaciones.push(recoMes("L6", "hidraulica", "Hidráulica", 22));
+  e = await ejecutar();
+  assert.deepEqual(e.creadas.map((x) => x.equipo), ["L6"]);
+  const id6 = e.creadas[0].id;
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id6}/rechazar`, {})).status, 400, "motivo obligatorio");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id6}/rechazar`, { motivo: "Se hará en el paro anual" }, "op")).status, 403);
+  r = await api("POST", `/api/contramedidas/propuestas/${id6}/rechazar`, { motivo: "Se hará en el paro anual" });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.estado, "RECHAZADA");
+  assert.equal(r.data.motivo, "Se hará en el paro anual");
+  e = await ejecutar();
+  assert.equal(e.creadas.length, 0, "el mismo ciclo rechazado no se vuelve a proponer solo");
+  assert.equal(await count("contramedidas_propuestas", "WHERE equipo_codigo = 'L6'"), 1);
+  rl = (await reco()).recomendaciones.find((x) => x.equipo.codigo === "L6");
+  assert.equal(rl.programacion.estado, "RECHAZADA", "sigue visible para programarla a mano");
+  assert.equal(mesContramedidas.filter((c) => c.equipo.codigo === "L6").length, 0, "rechazar no toca el MES");
+  assert.equal((await api("POST", `/api/contramedidas/propuestas/${id6}/aprobar`, {})).status, 409);
+
+  // Propuesta cuya recomendacion ya se atendio directamente en el MES: no se aprueba.
+  mesRecomendaciones = mesRecomendaciones.filter((x) => !(x.equipo.codigo === "L4"));
+  r = await api("POST", `/api/contramedidas/propuestas/${idNuevoCiclo}/aprobar`, {});
+  assert.equal(r.status, 409);
+  assert.equal(r.data.code, "RECOMENDACION_NO_VIGENTE");
+  const [pv] = await dbq("SELECT estado FROM contramedidas_propuestas WHERE id = ?", [idNuevoCiclo]);
+  assert.equal(pv.estado, "PENDIENTE_APROBACION", "vuelve a pendiente para rechazarla");
+  r = await api("GET", "/api/contramedidas/propuestas?estado=PENDIENTE_APROBACION");
+  assert.equal(r.data.find((x) => x.id === idNuevoCiclo).vigente, false);
+  await api("POST", `/api/contramedidas/propuestas/${idNuevoCiclo}/rechazar`, { motivo: "Atendida en el MES" });
+
+  // Programacion automatica apagada: no propone; la recomendacion queda para manual.
+  await api("PUT", "/api/configuracion", { valores: { programacion_automatica_activa: false } });
+  mesRecomendaciones.push(recoMes("L7", "sensor", "Sensor", 40));
+  e = await ejecutar();
+  assert.equal(e.activa, false);
+  assert.equal(await count("contramedidas_propuestas", "WHERE equipo_codigo = 'L7'"), 0);
+  assert.equal((await reco()).recomendaciones.find((x) => x.equipo.codigo === "L7").programacion.estado, "AUTOMATICA_INACTIVA");
+
+  // Auditoria completa de la programacion y aprobacion.
+  const acciones = (await dbq("SELECT DISTINCT accion FROM auditoria")).map((x) => x.accion).sort();
+  for (const a of ["CONFIGURACION_MODIFICADA", "PROGRAMACION_AUTOMATICA_CREADA", "CONTRAMEDIDA_REPROGRAMADA", "CONTRAMEDIDA_APROBADA", "CONTRAMEDIDA_RECHAZADA", "CONTRAMEDIDA_PROGRAMADA_MANUAL"]) {
+    assert.ok(acciones.includes(a), `auditoria: ${a}`);
+  }
+  const [auto] = await dbq("SELECT usuario FROM auditoria WHERE accion = 'PROGRAMACION_AUTOMATICA_CREADA' ORDER BY id LIMIT 1");
+  assert.equal(auto.usuario, USUARIOS.admin.username, "quien disparo la ejecucion desde la pantalla");
+
+  // Limpieza: el resto de las pruebas espera los datos originales.
+  for (const id of creadasLocal) await api("DELETE", `/api/contramedidas/${id}`);
+  await api("PUT", "/api/configuracion", { valores: { programacion_automatica_activa: true, programacion_dias_permitidos: [1, 2, 3, 4, 5, 6], programacion_horizonte_dias: 14 } });
+  mesRecomendaciones = [];
+});
+
+test("contramedidas en modo LOCAL (desarrollo, sin KOIDE MES): flujo completo", async () => {
+  // 1) Paros locales (tiempo_muerto) sincronizados una vez; despues el MES se apaga.
+  const base = makeRecords(1, 50000)[0];
+  let n = 0;
+  const paro = (maquina, categoria, inicio, minutos) => ({ ...base, id: 50000 + n++, machine_id: Number(maquina.slice(1)), machine_code: maquina, downtime_category: categoria,
+    downtime_start: inicio, downtime_end: new Date(Date.parse(inicio) + minutos * 60000).toISOString(), downtime_minutes: minutos, status: "Finalizado" });
+  const recordsOriginales = mesRecords;
+  const koideOriginales = koideRecords;
+  mesRecords = [
+    paro("M1", "Falla eléctrica", "2026-09-02T10:00:00.000Z", 600), paro("M1", "Falla eléctrica", "2026-09-05T10:00:00.000Z", 594), // 19.9 h
+    paro("M2", "Falla eléctrica", "2026-09-03T10:00:00.000Z", 1200),                                                                // 20 h
+    paro("M3", "Sensor", "2026-09-04T10:00:00.000Z", 1500),                                                                          // 25 h
+    paro("M3", "Falla hidráulica", "2026-09-06T10:00:00.000Z", 1000), paro("M3", "Falla hidráulica", "2026-09-07T10:00:00.000Z", 800), // 30 h
+    { ...paro("M1", "", "2026-09-08T10:00:00.000Z", 5000), downtime_category: null },                                                  // sin categoria: no acumula
+    { ...paro("M2", "Sensor", "2026-09-09T10:00:00.000Z", 3000), downtime_end: null, status: "En reparación" },                        // abierto: no acumula
+  ];
+  koideRecords = [];
+  let r = await api("GET", "/api/refresh");
+  assert.equal(r.status, 200);
+  assert.equal(await count("tiempo_muerto"), mesRecords.length);
+  const envMes = appEnv;
+  await stopApp();
+  appEnv = { ...appEnv, CONTRAMEDIDAS_FUENTE: "local", KOIDE_GENERAL_URL: "http://127.0.0.1:1", KOIDE_BASE_URL: "http://127.0.0.1:1" };
+  await startApp();
+  const llamadasMes = mesLlamadas.length;
+  const creadas = [];
+  try {
+    const reco = async () => (await api("GET", "/api/contramedidas/recomendaciones")).data;
+    const claves = async () => (await reco()).recomendaciones.map((x) => x.clave).sort();
+    const ejecutar = async () => {
+      const x = await api("POST", "/api/contramedidas/programacion-automatica", {});
+      assert.equal(x.status, 200, JSON.stringify(x.data));
+      return x.data;
+    };
+
+    // 2) Configuracion local: umbral 20 sembrado por la migracion.
+    r = await api("GET", "/api/configuracion");
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    let umbral = r.data.parametros.find((x) => x.clave === "contramedida_umbral_horas");
+    assert.equal(umbral.fuente, "local");
+    assert.equal(umbral.valor, 20);
+    assert.equal(umbral.disponible, true);
+
+    // Casos A/B: 19.9 h no, 20 h si (y los de 25 y 30 h tambien).
+    r = await reco();
+    assert.equal(r.fuente, "local");
+    assert.equal(r.umbralHoras, 20);
+    assert.deepEqual(await claves(), ["M2|falla_electrica", "M3|falla_hidraulica", "M3|sensor"]);
+    const m2 = r.recomendaciones.find((x) => x.clave === "M2|falla_electrica");
+    assert.equal(m2.horasAcumuladas, 20);
+    assert.equal(m2.paros, 1);
+    assert.equal(m2.equipo.nombre, "MAQ-2", "nombre del equipo desde el catalogo local");
+
+    // Casos C/D: umbral 30 -> 25 h no, 30 h si. Se guarda y se vuelve a consultar.
+    r = await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 30 } });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.deepEqual(r.data.cambios, [{ clave: "contramedida_umbral_horas", anterior: 20, nuevo: 30 }]);
+    umbral = (await api("GET", "/api/configuracion")).data.parametros.find((x) => x.clave === "contramedida_umbral_horas");
+    assert.equal(umbral.valor, 30);
+    assert.equal(umbral.actualizadoPor, USUARIOS.admin.username);
+    const [fila] = await dbq("SELECT valor, actualizado_por FROM configuracion_sistema WHERE clave = 'contramedida_umbral_horas'");
+    assert.equal(fila.valor, "30");
+    assert.deepEqual(await claves(), ["M3|falla_hidraulica"]);
+    const [aud] = await dbq("SELECT * FROM auditoria WHERE entidad_id = 'contramedida_umbral_horas' ORDER BY id DESC LIMIT 1");
+    assert.equal(aud.valor_anterior, "20");
+    assert.equal(aud.valor_nuevo, "30");
+    assert.equal(aud.usuario, USUARIOS.admin.username);
+    await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 20, programacion_dias_permitidos: [1, 2, 3, 4, 5, 6, 7], programacion_horizonte_dias: 2, programacion_max_por_dia: 1 } });
+    assert.equal((await reco()).umbralHoras, 20);
+
+    // 3) Casos E/F: horizonte de 2 dias y 1 por dia -> las 2 de mas horas reciben fecha; M2 no.
+    const [d1, d2, d3] = [1, 2, 3].map(fechaLocalTest);
+    let e = await ejecutar();
+    assert.deepEqual(e.creadas.map((x) => [x.equipo, x.categoria, x.fechaPropuesta]), [["M3", "Falla hidráulica", d1], ["M3", "Sensor", d2]]);
+    assert.deepEqual(e.sinFecha.map((x) => x.ciclo), ["M2|falla_electrica#0"]);
+    r = await reco();
+    assert.equal(r.recomendaciones.find((x) => x.clave === "M2|falla_electrica").programacion.estado, "SIN_FECHA");
+    assert.equal(r.recomendaciones.find((x) => x.clave === "M3|falla_hidraulica").programacion.estado, "PENDIENTE_APROBACION");
+    const idHid = e.creadas[0].id;
+    const idSen = e.creadas[1].id;
+
+    // 4) Caso G: sin duplicados aunque se repita y sigan sumando horas (mismo ciclo).
+    await dbq(`INSERT INTO tiempo_muerto (id, orden, machine_code, downtime_category, downtime_start, downtime_end, payload)
+               VALUES (59001, 59001, 'M3', 'Falla hidráulica', '2026-09-10 10:00:00', '2026-09-10 12:00:00', '{}')`);
+    e = await ejecutar();
+    assert.equal(e.creadas.length, 0);
+    assert.equal((await reco()).recomendaciones.find((x) => x.clave === "M3|falla_hidraulica").horasAcumuladas, 32);
+    assert.equal(await count("contramedidas_propuestas", "WHERE equipo_codigo IN ('M2', 'M3')"), 2);
+
+    // 5) Reprogramar a una fecha disponible (con motivo).
+    await api("PUT", "/api/configuracion", { valores: { programacion_horizonte_dias: 3 } });
+    r = await api("GET", `/api/contramedidas/propuestas/${idHid}/fechas-disponibles`);
+    assert.deepEqual(r.data.fechas, [d1, d3], "d2 lo ocupa la otra propuesta");
+    assert.equal((await api("POST", `/api/contramedidas/propuestas/${idHid}/reprogramar`, { fecha: d2, motivo: "Probar día lleno" })).status, 409);
+    r = await api("POST", `/api/contramedidas/propuestas/${idHid}/reprogramar`, { fecha: d3, motivo: "Producción programada" });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.fechaPropuesta, d3);
+    assert.equal(r.data.estado, "PENDIENTE_APROBACION");
+
+    // 6) Caso H: aprobar -> confirmada; la contramedida local cubre la acumulacion.
+    r = await api("POST", `/api/contramedidas/propuestas/${idHid}/aprobar`, {});
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.propuesta.estado, "CONFIRMADA");
+    assert.equal(r.data.propuesta.fechaConfirmada, d3);
+    assert.equal(r.data.propuesta.origen, "AUTOMATICA");
+    const cmHid = r.data.contramedida;
+    creadas.push(cmHid.id);
+    assert.equal(cmHid.recomendacionClave, "M3|falla_hidraulica");
+    assert.equal(cmHid.fechaLimite, d3);
+    assert.equal(cmHid.mesId, undefined, "sin KOIDE MES");
+    assert.ok(!(await claves()).includes("M3|falla_hidraulica"), "cubierta: la recomendacion deja de aparecer");
+    assert.equal((await api("POST", `/api/contramedidas/propuestas/${idHid}/aprobar`, {})).status, 409);
+    // Nueva acumulacion POSTERIOR -> nuevo ciclo -> nueva propuesta.
+    const futuro = new Date(Date.now() + 60000);
+    await dbq(`INSERT INTO tiempo_muerto (id, orden, machine_code, downtime_category, downtime_start, downtime_end, payload) VALUES (59002, 59002, 'M3', 'Falla hidráulica', ?, ?, '{}')`,
+      [futuro, new Date(futuro.getTime() + 21 * 3600000)]);
+    r = await reco();
+    const nueva = r.recomendaciones.find((x) => x.clave === "M3|falla_hidraulica");
+    assert.equal(nueva.horasAcumuladas, 21, "solo cuentan las horas posteriores a la contramedida");
+    assert.equal(nueva.ciclo, `M3|falla_hidraulica#${cmHid.id}`);
+    await api("PUT", "/api/configuracion", { valores: { programacion_horizonte_dias: 10 } });
+    e = await ejecutar();
+    assert.ok(e.creadas.some((x) => x.ciclo === `M3|falla_hidraulica#${cmHid.id}`));
+
+    // 7) Caso I: rechazar -> no se vuelve a proponer sola; queda para manual.
+    r = await api("POST", `/api/contramedidas/propuestas/${idSen}/rechazar`, { motivo: "Se hará en el paro anual" });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.estado, "RECHAZADA");
+    e = await ejecutar();
+    assert.ok(!e.creadas.some((x) => x.equipo === "M3" && x.categoria === "Sensor"));
+    assert.equal((await reco()).recomendaciones.find((x) => x.clave === "M3|sensor").programacion.estado, "RECHAZADA");
+
+    // 8) Programacion manual desde la recomendacion (M2) -> confirmada / manual.
+    const recoM2 = (await reco()).recomendaciones.find((x) => x.clave === "M2|falla_electrica");
+    r = await api("POST", "/api/contramedidas", { tipo: "Falla eléctrica", maquina: "M2", maquinaNombre: "MAQ-2", responsable: "Ana", fechaLimite: fechaLocalTest(20), estado: "Pendiente",
+      recomendacionClave: recoM2.clave, recomendacionCiclo: recoM2.ciclo, categoriaCodigo: "falla_electrica", descripcion: recoM2.recomendacion });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    creadas.push(r.data.id);
+    assert.equal(r.data.recomendacionClave, "M2|falla_electrica");
+    const [pm] = await dbq("SELECT * FROM contramedidas_propuestas WHERE recomendacion_clave = 'M2|falla_electrica'");
+    assert.equal(pm.estado, "CONFIRMADA");
+    assert.equal(pm.origen, "MANUAL");
+    assert.ok(!(await claves()).includes("M2|falla_electrica"));
+    r = await api("GET", "/api/contramedidas/propuestas?estado=CONFIRMADA");
+    assert.deepEqual(r.data.filter((x) => ["M2", "M3"].includes(x.equipo.codigo)).map((x) => [x.equipo.codigo, x.origen]).sort(), [["M2", "MANUAL"], ["M3", "AUTOMATICA"]]);
+
+    // Una sola propuesta por ciclo y ninguna llamada a KOIDE MES en todo el flujo.
+    const [dup] = await dbq("SELECT COUNT(*) AS n, COUNT(DISTINCT ciclo) AS c FROM contramedidas_propuestas");
+    assert.equal(Number(dup.n), Number(dup.c));
+    assert.equal(mesLlamadas.length, llamadasMes, "el modulo no llamo a KOIDE MES");
+  } finally {
+    for (const id of creadas) await api("DELETE", `/api/contramedidas/${id}`);
+    await dbq("DELETE FROM tiempo_muerto WHERE id IN (59001, 59002)");
+    await dbq("DELETE FROM contramedidas_propuestas");
+    await api("PUT", "/api/configuracion", { valores: { contramedida_umbral_horas: 20, programacion_dias_permitidos: [1, 2, 3, 4, 5, 6], programacion_horizonte_dias: 14 } });
+    await stopApp();
+    appEnv = envMes;
+    await startApp();
+    mesRecords = recordsOriginales;
+    koideRecords = koideOriginales;
+    await api("GET", "/api/refresh");
+  }
+});
+
+test("planificacion de contramedidas: reglas de fechas (funciones puras)", () => {
+  const plan = require("../lib/contramedidasPlanificacion");
+  const hoy = "2026-09-30"; // miercoles
+  const op = { hoy, diasPermitidos: [1, 2, 3, 4, 5, 6], horizonteDias: 7, maxPorDia: 1 };
+  const equipo = { codigo: "M1", nombre: "Prensa 1" };
+  const vacio = { programadas: [], calendario: [] };
+  assert.equal(plan.diaSemana("2026-10-04"), 7, "domingo");
+  assert.deepEqual(plan.fechasDisponibles(op, vacio, equipo), ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05", "2026-10-06", "2026-10-07"], "sin hoy ni domingo");
+  assert.match(plan.motivoNoDisponible("2026-09-30", op, vacio, equipo), /posterior a hoy/);
+  assert.match(plan.motivoNoDisponible("2026-10-08", op, vacio, equipo), /horizonte/);
+  // Capacidad por dia y mismo equipo.
+  let ocup = { programadas: [{ fecha: "2026-10-01", equipo: "OTRA" }], calendario: [] };
+  assert.equal(plan.buscarFecha(op, ocup, equipo), "2026-10-02");
+  assert.equal(plan.buscarFecha({ ...op, maxPorDia: 2 }, ocup, equipo), "2026-10-01");
+  ocup = { programadas: [{ fecha: "2026-10-01", equipo: "m1" }], calendario: [] };
+  assert.match(plan.motivoNoDisponible("2026-10-01", { ...op, maxPorDia: 5 }, ocup, equipo), /mismo|equipo ya tiene/);
+  // Calendario de mantenimiento (Excel): fecha en encabezado, equipo a la izquierda.
+  const serial = (f) => (Date.parse(`${f}T00:00:00Z`) - Date.UTC(1899, 11, 30)) / 86400000;
+  const cal = [{ name: "cal.xlsx", sheets: [{ maxRow: 4, cells: {
+    B1: { t: "n", v: serial("2026-10-01"), w: "01/10" }, C1: { t: "n", v: serial("2026-10-02"), w: "02/10" },
+    A3: { t: "s", v: "PRENSA 1", w: "PRENSA 1" }, B3: { t: "s", v: "P", w: "Preventivo" },
+    A4: { t: "s", v: "M10", w: "M10" }, C4: { t: "s", v: "L", w: "Lubricación" },
+  } }] }];
+  const acts = plan.actividadesCalendario(cal);
+  assert.deepEqual(acts.map((a) => [a.fecha, a.equipo, a.actividad]), [["2026-10-01", "PRENSA 1", "Preventivo"], ["2026-10-02", "M10", "Lubricación"]]);
+  ocup = { programadas: [], calendario: acts };
+  assert.match(plan.motivoNoDisponible("2026-10-01", op, ocup, equipo), /calendario de mantenimiento/, "coincide por nombre (Prensa 1)");
+  assert.equal(plan.motivoNoDisponible("2026-10-02", op, ocup, equipo), null, "M10 no es M1");
+  assert.equal(plan.buscarFecha(op, ocup, equipo), "2026-10-02");
+  // Sin ningun dia posible -> null (nunca inventa).
+  assert.equal(plan.buscarFecha({ ...op, diasPermitidos: [7], horizonteDias: 3 }, vacio, equipo), null);
 });
 
 test("bonos: plantilla, semanas, descarga", async () => {
@@ -794,6 +1335,7 @@ test("operadores: alta por el administrador (usuario + PIN + numero del MES), PI
 });
 
 test("autorizacion: el backend valida el rol (401/403)", async () => {
+  let r0;
   const soloAdmin = [
     ["GET", "/api/data"],
     ["GET", "/api/refresh"],
@@ -804,6 +1346,9 @@ test("autorizacion: el backend valida el rol (401/403)", async () => {
     ["GET", "/api/entregas"],
     ["GET", "/api/contramedidas"],
     ["POST", "/api/contramedidas"],
+    ["GET", "/api/configuracion"],
+    ["PUT", "/api/configuracion"],
+    ["POST", "/api/contramedidas/propuestas/1/aprobar"],
     ["GET", "/api/calendarios"],
     ["GET", "/api/documentos"],
     ["DELETE", "/api/documentos/Dibujos/x.pdf"],
@@ -815,6 +1360,49 @@ test("autorizacion: el backend valida el rol (401/403)", async () => {
   assert.equal((await api("GET", "/api/operador/atenciones", null, null)).status, 401);
   assert.equal((await api("GET", "/api/operador/atenciones", null, "op")).status, 200);
   assert.equal((await api("GET", "/api/operador/atenciones", null, "admin")).status, 200, "el admin tambien puede usar la pantalla de operador");
+
+  // tecnico_consulta (mig 006): SOLO LECTURA de desempeno / tiempo muerto / MTTR-MTBF / historico.
+  r0 = await api("POST", "/api/admin/operadores", { rol: "tecnico_consulta", nombre: "Consulta Prueba", username: "consulta_prueba", password: "consulta-123" });
+  assert.equal(r0.status, 201, JSON.stringify(r0.data));
+  assert.equal(r0.data.rol, "tecnico_consulta");
+  assert.equal(r0.data.numeroEmpleado, null);
+  assert.equal((await api("PATCH", "/api/admin/operadores/consulta_prueba", { numeroEmpleado: "7778" })).status, 400, "un usuario de consulta no lleva numero (no atiende paros)");
+  const lc = await login("consulta_prueba", "consulta-123");
+  assert.equal(lc.status, 200);
+  assert.equal(lc.data.redirect, "/", "entra al dashboard");
+  const con = { headers: { Cookie: lc.cookie } };
+  const me = await api("GET", "/api/auth/me", null, con);
+  assert.deepEqual(me.data.capacidades.sort(), ["dashboard", "historico"]);
+  assert.equal((await api("GET", "/api/data", null, con)).status, 200, "tiempo muerto / MTTR / MTBF / desempeno (lectura)");
+  assert.equal((await api("GET", "/api/refresh", null, con)).status, 200);
+  const hist = await api("GET", "/api/historico/paros?estado=todos", null, con);
+  assert.equal(hist.status, 200, JSON.stringify(hist.data));
+  assert.ok(Array.isArray(hist.data.filas));
+  assert.equal((await api("GET", "/api/historico/catalogos", null, con)).status, 200);
+  // Directamente contra la API, todo lo demas se rechaza en el backend (403).
+  const prohibido = [
+    ["GET", "/api/operador/atenciones"], ["POST", "/api/operador/reportes/482913/aceptar"], ["POST", "/api/operador/atenciones/1000001/continuidad"],
+    ["POST", "/api/operador/atenciones/1000001/finalizar"], ["POST", "/api/operador/atenciones/1000001/evidencias"],
+    ["GET", "/api/admin/operadores"], ["POST", "/api/admin/operadores"], ["PATCH", "/api/admin/operadores/roberto"],
+    ["GET", "/api/contramedidas"], ["POST", "/api/contramedidas"], ["PUT", "/api/contramedidas/x"], ["DELETE", "/api/contramedidas/x"], ["GET", "/api/contramedidas/recomendaciones"],
+    ["GET", "/api/configuracion"], ["PUT", "/api/configuracion"], ["GET", "/api/auditoria"], ["POST", "/api/contramedidas/programacion-automatica"],
+    ["GET", "/api/contramedidas/propuestas"], ["POST", "/api/contramedidas/propuestas/1/aprobar"], ["POST", "/api/contramedidas/propuestas/1/rechazar"],
+    ["POST", "/api/contramedidas/propuestas/1/reprogramar"],
+    ["GET", "/api/bonos"], ["POST", "/api/bonos/week"], ["GET", "/api/calendarios"], ["POST", "/api/calendarios"], ["GET", "/api/documentos"], ["POST", "/api/documentos/Dibujos"],
+    ["GET", "/api/gastos"], ["POST", "/api/gastos/refresh"], ["GET", "/api/entregas"],
+  ];
+  for (const [m, u] of prohibido) {
+    const rr = await api(m, u, m === "GET" ? null : {}, con);
+    assert.equal(rr.status, 403, `${m} ${u} como tecnico_consulta debe ser 403 (fue ${rr.status})`);
+  }
+  assert.equal((await api("GET", "/", null, con)).status, 200, "ve el dashboard");
+  assert.equal((await api("GET", "/app.js", null, con)).status, 200);
+  assert.equal((await api("GET", "/operador-mantenimiento", null, con)).status, 302, "no tiene pantalla de operador");
+  const opAsConsulta = await api("GET", "/operador.js", null, con);
+  assert.equal(opAsConsulta.status, 302);
+  // El operador tampoco ve el historico ni el dashboard.
+  assert.equal((await api("GET", "/api/historico/paros", null, "op")).status, 403);
+  assert.equal((await api("POST", "/api/admin/operadores", { rol: "tecnico_consulta", nombre: "x", username: "consulta_op", password: "consulta-123" }, "op")).status, 403);
 
   // Paginas: sin sesion -> /login; operador -> su pantalla; admin -> dashboard.
   let r = await api("GET", "/", null, null);
@@ -954,8 +1542,20 @@ test("operador: codigo de atencion -> aceptar -> espera externa -> finalizar -> 
   assert.equal(r.data.estado, "EN_ATENCION");
   assert.equal(r.data.esperaExterna.minutos, 7);
 
-  // Validaciones tempranas (el MES vuelve a validar).
+  // Evidencia DURANTE la atencion (MES mig 090): persistente, con quien la subio.
   const foto = (tipo, name = `${tipo}.png`, buf = PNG) => ({ tipo, name, base64: buf.toString("base64") });
+  r = await api("POST", `/api/operador/atenciones/${atencionId}/evidencias`, { fotos: [{ ...foto("durante"), descripcion: "sensor sucio" }] }, "op");
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(r.data.fotos.length, 1);
+  assert.equal(r.data.fotos[0].tipo, "durante");
+  assert.equal(r.data.fotos[0].etapa, "atencion");
+  assert.equal(r.data.fotos[0].descripcion, "sensor sucio");
+  assert.equal(r.data.fotos[0].subidoPor.numeroEmpleado, "1382");
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/evidencias`, { fotos: [{ ...foto("x") }] }, "op")).status, 400, "tipo invalido");
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/evidencias`, { fotos: [] }, "op")).status, 400, "sin fotos");
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/evidencias`, { fotos: [foto("durante")] }, "admin")).data.code, "TECNICO_SIN_NUMERO");
+
+  // Validaciones tempranas (el MES vuelve a validar).
   const base = { categoria: "sensor", problemaDetectado: "Sensor sucio", actionTaken: "Se limpio", fotos: [foto("antes"), foto("despues")] };
   const fin = (extra) => api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, { ...base, ...extra }, "op");
   assert.equal((await fin({ categoria: "" })).status, 400, "categoria obligatoria");
@@ -963,7 +1563,7 @@ test("operador: codigo de atencion -> aceptar -> espera externa -> finalizar -> 
   assert.equal((await fin({ actionTaken: "" })).status, 400, "trabajo obligatorio");
   assert.equal((await fin({ fotos: [foto("antes")] })).status, 400, "foto despues obligatoria");
   assert.equal((await fin({ fotos: [foto("antes", "a.gif"), foto("despues")] })).status, 400, "solo jpg/png");
-  assert.equal((await fin({ fotos: [foto("antes"), foto("despues"), foto("antes")] })).status, 400, "max 2 fotos");
+  assert.equal((await fin({ fotos: Array(7).fill(0).map(() => foto("durante")) })).status, 400, "max 6 fotos");
 
   // Finalizar sin numero de empleado -> 403 sin llegar al MES.
   antesMes = mesLlamadas.length;
@@ -985,23 +1585,26 @@ test("operador: codigo de atencion -> aceptar -> espera externa -> finalizar -> 
   assert.equal(r.data.tecnicoNumeroEmpleado, "1382", "quien inicio no se sobrescribe");
   assert.equal(r.data.puedeOperar, true, "ya participa: puede pausar/reanudar");
 
-  // Lo FINALIZA el segundo tecnico (distinto de quien inicio).
+  // Lo FINALIZA el segundo tecnico (distinto de quien inicio): el paro queda CERRADO.
   r = await api("POST", `/api/operador/atenciones/${atencionId}/finalizar`, base, otroH);
   assert.equal(r.status, 200, JSON.stringify(r.data));
-  assert.equal(r.data.estado, "PENDIENTE_CIERRE");
+  assert.equal(r.data.estado, "CERRADO", "finalizar cierra el paro (sin codigo de cierre)");
+  assert.equal(r.data.codigoCierre, null);
+  assert.equal(r.data.cierreModo, "finalizacion");
+  assert.ok(r.data.cerradoEn);
   assert.equal(mesLlamadas.filter((c) => c.url.endsWith("/finalizar")).pop().actor, "2000", "finaliza con SU numero de empleado");
   assert.deepEqual(r.data.participantes.map((x) => `${x.numeroEmpleado}:${x.roles.join("+")}`), ["1382:inicio", "2000:continuidad+finalizo"]);
   assert.ok(r.data.participantes.every((x) => x.minutosAsignados === 60), "cada participante con el tiempo completo");
-  assert.match(r.data.codigoCierre, /^C-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
   assert.equal(r.data.categoria.codigo, "sensor");
   assert.equal(r.data.problemaDetectado, "Sensor sucio");
   assert.equal(r.data.actionTaken, "Se limpio");
-  assert.equal(r.data.fotos.length, 2);
-  cierreGenerado = r.data.codigoCierre;
-  // Doble finalizacion: el MES la rechaza (409) y el codigo no cambia.
+  assert.equal(r.data.fotos.length, 3, "durante + antes + despues: la evidencia no se borra al cerrar");
+  cierreGenerado = "C-ABCD-EF23"; // ya no existe: solo para el endpoint retirado (410)
+  // Doble finalizacion: el MES la rechaza (409) y el reporte no cambia.
   const doble = await fin({ problemaDetectado: "otra cosa" });
   assert.equal(doble.status, 409, JSON.stringify(doble.data));
-  assert.equal((await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op")).data.codigoCierre, cierreGenerado);
+  assert.equal((await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op")).data.problemaDetectado, "Sensor sucio");
+  assert.equal((await api("POST", `/api/operador/atenciones/${atencionId}/evidencias`, { fotos: [foto("durante")] }, "op")).status, 409, "sin evidencia nueva tras cerrar");
   for (const f of r.data.fotos) {
     const g = await api("GET", f.url, null, "op");
     assert.equal(g.status, 200);
@@ -1011,7 +1614,7 @@ test("operador: codigo de atencion -> aceptar -> espera externa -> finalizar -> 
   // Nada se escribe en las tablas locales de atenciones: el MES es la fuente.
   assert.equal(await count("paro_atenciones"), 0);
   r = await api("GET", "/api/operador/atenciones", null, "op");
-  assert.equal(r.data.recientes[0].codigoCierre, cierreGenerado);
+  assert.equal(r.data.recientes[0].estado, "CERRADO");
 });
 
 test("admin participante: un mantenimiento_admin con numero atiende paros sin dejar de ser admin", async () => {
@@ -1054,13 +1657,13 @@ test("admin participante: un mantenimiento_admin con numero atiende paros sin de
   const foto = { tipo: "despues", name: "d.png", base64: PNG.toString("base64") };
   r = await api("POST", `/api/operador/atenciones/${r.data.id}/finalizar`, { categoria: "sensor", problemaDetectado: "p", actionTaken: "t", fotos: [foto] }, jona);
   assert.equal(r.status, 200, JSON.stringify(r.data));
-  assert.equal(r.data.estado, "PENDIENTE_CIERRE");
+  assert.equal(r.data.estado, "CERRADO", "el admin finaliza y el paro queda cerrado");
   assert.equal(mesLlamadas.filter((c) => c.url.endsWith("/finalizar")).pop().rol, "mantenimiento_admin");
   assert.ok(r.data.participantes.every((x) => x.minutosAsignados === 60), "tiempo completo para cada participante");
   const id = r.data.id;
-  // Metricas NO cierra el paro (solo Capture Terminal con el codigo).
-  assert.equal((await api("POST", `/api/operador/atenciones/${id}/cerrar`, { codigoCierre: r.data.codigoCierre }, jona)).status, 404);
-  assert.equal((await api("POST", "/api/terminal/cierres/validar", { codigoCierre: r.data.codigoCierre }, jona)).status, 410);
+  // No existe ninguna accion de "cerrar" aparte: ni en Metricas ni para la terminal.
+  assert.equal((await api("POST", `/api/operador/atenciones/${id}/cerrar`, {}, jona)).status, 404);
+  assert.equal((await api("POST", "/api/terminal/cierres/validar", { codigoCierre: "x" }, jona)).status, 410);
 
   // Cambiar despues su rol NO cambia lo historico (rol_snapshot del MES).
   await dbq("UPDATE usuarios SET rol = 'mantenimiento_op' WHERE username = 'admin_jona'");
@@ -1139,8 +1742,8 @@ test("persistencia de sesiones y atenciones tras reiniciar", async () => {
   await startApp();
   const r = await api("GET", `/api/operador/atenciones/${atencionId}`, null, "op");
   assert.equal(r.status, 200, "la sesion sigue valida despues de reiniciar");
-  assert.equal(r.data.estado, "PENDIENTE_CIERRE");
-  assert.equal(r.data.codigoCierre, cierreGenerado);
+  assert.equal(r.data.estado, "CERRADO");
+  assert.equal(r.data.codigoCierre, null);
 });
 
 /* ---------- Perdida de conexion con MySQL ---------- */

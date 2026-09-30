@@ -25,20 +25,30 @@
         <span class="btn-spinner" hidden></span>Actualizar datos
       </button>
     </div>
+    <button class="nav-toggle" id="nav-toggle" type="button" aria-controls="menu-lateral" aria-expanded="true" title="Mostrar u ocultar el menú de módulos">
+      <span class="nav-toggle-icon" aria-hidden="true"></span><span class="nav-toggle-label">Menú</span>
+    </button>
   </header>
 
   <div class="layout">
-    <aside class="menu" aria-label="Secciones">
+    <aside class="menu" id="menu-lateral" aria-label="Secciones">
+      <div class="menu-head">
+        <span class="menu-title">Módulos</span>
+        <button class="menu-close" id="menu-close" type="button" aria-label="Cerrar menú">&times;</button>
+      </div>
       <button class="menu-item active" data-view="tiempo" type="button">Tiempo muerto</button>
       <button class="menu-item" data-view="contramedidas" type="button">Contramedidas</button>
       <button class="menu-item" data-view="mttr" type="button">MTTR / MTBF</button>
       <button class="menu-item" data-view="tecnicos" type="button">Desempeño técnicos</button>
+      <button class="menu-item" data-view="historico" type="button">Histórico de paros</button>
       <button class="menu-item" data-view="bonos" type="button">Bonos semanales</button>
       <button class="menu-item" data-view="calendarios" type="button">Calendarios de mantenimiento</button>
       <button class="menu-item" data-view="documentos" type="button">Documentos</button>
       <button class="menu-item" data-view="gastos" type="button">Control de gastos</button>
       <button class="menu-item" data-view="entregas" type="button">Tiempos de entrega</button>
       <button class="menu-item" data-view="operadores" type="button">Personal de mantenimiento</button>
+      <button class="menu-item" data-view="configuracion" type="button">Configuración del sistema</button>
+      <div class="menu-foot" id="menu-sesion"></div>
     </aside>
 
     <main class="container">
@@ -555,6 +565,53 @@
         </div>
       </div>
 
+      <!-- Modal reprogramar propuesta de contramedida -->
+      <div class="modal-overlay hidden-modal" id="modal-cm-reprogramar" role="dialog" aria-modal="true" aria-labelledby="cm-rep-titulo">
+        <div class="modal-panel">
+          <div class="panel-head">
+            <h2 id="cm-rep-titulo">Reprogramar contramedida</h2>
+            <button type="button" class="btn-close" data-cerrar-modal="modal-cm-reprogramar" aria-label="Cerrar">&times;</button>
+          </div>
+          <p class="panel-hint" id="cm-rep-ref">—</p>
+          <div class="form">
+            <div class="filter-group form-full">
+              <label for="cm-rep-fecha">Nueva fecha (solo fechas disponibles)</label>
+              <select id="cm-rep-fecha"></select>
+            </div>
+            <div class="filter-group form-full">
+              <label for="cm-rep-motivo">Motivo de la reprogramación</label>
+              <textarea id="cm-rep-motivo" rows="3" maxlength="500" placeholder="Ej. la línea tiene producción programada ese día..."></textarea>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn" id="cm-rep-guardar">Guardar nueva fecha</button>
+            <button type="button" class="btn btn-ghost" data-cerrar-modal="modal-cm-reprogramar">Cancelar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal rechazar propuesta de contramedida -->
+      <div class="modal-overlay hidden-modal" id="modal-cm-rechazar" role="dialog" aria-modal="true" aria-labelledby="cm-rech-titulo">
+        <div class="modal-panel">
+          <div class="panel-head">
+            <h2 id="cm-rech-titulo">Rechazar propuesta</h2>
+            <button type="button" class="btn-close" data-cerrar-modal="modal-cm-rechazar" aria-label="Cerrar">&times;</button>
+          </div>
+          <p class="panel-hint" id="cm-rech-ref">—</p>
+          <div class="form">
+            <div class="filter-group form-full">
+              <label for="cm-rech-motivo">Motivo del rechazo</label>
+              <textarea id="cm-rech-motivo" rows="3" maxlength="500" placeholder="Ej. se atenderá en el paro anual de planta..."></textarea>
+            </div>
+          </div>
+          <p class="panel-hint">La recomendación seguirá visible para programarla manualmente; el sistema no volverá a proponerla sola hasta una nueva acumulación.</p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-danger" id="cm-rech-guardar">Rechazar propuesta</button>
+            <button type="button" class="btn btn-ghost" data-cerrar-modal="modal-cm-rechazar">Cancelar</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= DESEMPEÑO DE TÉCNICOS ================= -->
       <div class="view" id="view-tecnicos" hidden>
         <section class="kpis" aria-label="Indicadores técnicos">
@@ -926,6 +983,84 @@
           </section>
         </section>
 
+        <!-- Recomendaciones por ACUMULACION de fallas (local o KOIDE MES segun CONTRAMEDIDAS_FUENTE):
+             equipo + categoria de falla con >= umbral de horas de paro. -->
+        <section class="panel" id="cm-reco-panel">
+          <div class="panel-head">
+            <h2>Recomendaciones de contramedida por acumulación de fallas</h2>
+            <span class="badge badge-muted" id="cm-reco-cuenta">—</span>
+          </div>
+          <p class="panel-hint" id="cm-reco-hint">
+            Un equipo que acumula <strong id="cm-reco-umbral">—</strong> h o más de paros cerrados de una misma categoría de falla
+            (umbral en <em>Configuración del sistema</em>) recibe una recomendación de contramedida / mantenimiento profundo.
+            El sistema busca una fecha disponible y deja una <strong>propuesta pendiente de aprobación</strong>; nada se confirma
+            sin un administrador. Al <strong>programar</strong> o <strong>aprobar</strong> la contramedida, la recomendación se da por
+            atendida y solo vuelve a aparecer si se acumulan otra vez esas horas con paros posteriores.
+          </p>
+          <div class="table-wrap">
+            <table class="table" id="tabla-recomendaciones">
+              <thead>
+                <tr>
+                  <th>Equipo</th>
+                  <th>Proceso</th>
+                  <th>Categoría de falla</th>
+                  <th>Horas acumuladas</th>
+                  <th>Paros</th>
+                  <th>Desde</th>
+                  <th>Hasta</th>
+                  <th>Recomendación y programación</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Programacion automatica: propuestas que esperan a un administrador. -->
+        <section class="panel" id="cm-pend-panel">
+          <div class="panel-head">
+            <h2>Contramedidas pendientes de aprobación</h2>
+            <span class="badge badge-muted" id="cm-pend-cuenta">—</span>
+          </div>
+          <p class="panel-hint">
+            Fechas encontradas automáticamente en el calendario de mantenimiento. Solo un administrador puede
+            <strong>aprobarlas</strong>, <strong>reprogramarlas</strong> a otra fecha disponible o <strong>rechazarlas</strong>.
+          </p>
+          <div class="cm-pend-lista" id="cm-pend-lista"></div>
+        </section>
+
+        <section class="panel" id="cm-conf-panel">
+          <div class="panel-head">
+            <h2>Contramedidas confirmadas</h2>
+            <div class="cm-conf-filtro">
+              <select id="cm-conf-estado" aria-label="Mostrar contramedidas">
+                <option value="CONFIRMADA">Confirmadas</option>
+                <option value="RECHAZADA">Rechazadas</option>
+                <option value="CONFIRMADA,RECHAZADA">Todas</option>
+              </select>
+              <span class="badge badge-muted" id="cm-conf-cuenta">—</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tabla-cm-confirmadas">
+              <thead>
+                <tr>
+                  <th>Equipo</th>
+                  <th>Categoría de falla</th>
+                  <th>Horas acumuladas</th>
+                  <th>Recomendación generada</th>
+                  <th>Fecha propuesta</th>
+                  <th>Fecha confirmada</th>
+                  <th>Origen</th>
+                  <th>Aprobó / resolvió</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-head">
             <h2>Calendario de seguimiento</h2>
@@ -1088,6 +1223,97 @@
 
       <!-- ================= TIEMPOS DE ENTREGA ================= -->
       <!-- ================= Operadores de mantenimiento ================= -->
+      <!-- ================= HISTORICO DE PAROS (KOIDE MES, cualquier proceso) ================= -->
+      <div class="view" id="view-historico" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Histórico de paros de mantenimiento</h2>
+            <span class="badge badge-muted" id="hist-cuenta">—</span>
+          </div>
+          <p class="panel-hint">
+            Cualquier paro terminado de cualquier proceso (biselado, CNC, prensas, corte…), tal como lo registró KOIDE MES:
+            técnicos con su rol, tiempos, espera externa, eventos y evidencias. Solo consulta.
+          </p>
+          <div class="filter-bar">
+            <div class="filter-group"><label for="hist-desde">Desde</label><input type="date" id="hist-desde" /></div>
+            <div class="filter-group"><label for="hist-hasta">Hasta</label><input type="date" id="hist-hasta" /></div>
+            <div class="filter-group"><label for="hist-proceso">Proceso</label><select id="hist-proceso"><option value="">Todos</option></select></div>
+            <div class="filter-group"><label for="hist-equipo">Máquina / equipo</label><input type="text" id="hist-equipo" list="hist-equipos" placeholder="B7, CNC2, P1…" autocomplete="off" /><datalist id="hist-equipos"></datalist></div>
+            <div class="filter-group"><label for="hist-categoria">Categoría</label><select id="hist-categoria"><option value="">Todas</option></select></div>
+            <div class="filter-group"><label for="hist-tecnico">Técnico</label><input type="text" id="hist-tecnico" list="hist-tecnicos" placeholder="Número de empleado" autocomplete="off" /><datalist id="hist-tecnicos"></datalist></div>
+            <div class="filter-group"><label for="hist-estado">Estado</label>
+              <select id="hist-estado">
+                <option value="terminados">Terminados (cerrados + anulados)</option>
+                <option value="CERRADO">Cerrados</option>
+                <option value="ANULADO">Anulados</option>
+                <option value="vivos">En curso</option>
+                <option value="todos">Todos</option>
+              </select>
+            </div>
+            <div class="filter-group"><label for="hist-q">Buscar</label><input type="text" id="hist-q" placeholder="problema, trabajo, código de atención" autocomplete="off" /></div>
+            <div class="form-actions">
+              <button type="button" class="btn" id="hist-buscar">Buscar</button>
+              <button type="button" class="btn btn-ghost" id="hist-limpiar">Limpiar</button>
+            </div>
+          </div>
+          <p class="panel-hint" id="hist-msg" hidden></p>
+          <div class="table-wrap">
+            <table class="table" id="tabla-historico">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Turno</th>
+                  <th>Proceso</th>
+                  <th>Área</th>
+                  <th>Equipo</th>
+                  <th>Línea</th>
+                  <th>Categoría</th>
+                  <th>Problema</th>
+                  <th>Técnicos · rol</th>
+                  <th>Inicio paro</th>
+                  <th>Inicio atención</th>
+                  <th>Finalización</th>
+                  <th>Total</th>
+                  <th>Espera ext.</th>
+                  <th>Estado</th>
+                  <th>Evid.</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" id="hist-prev">Anteriores</button>
+            <span class="badge badge-muted" id="hist-pagina">—</span>
+            <button type="button" class="btn btn-ghost" id="hist-next">Siguientes</button>
+          </div>
+        </section>
+
+        <section class="panel" id="hist-detalle" hidden>
+          <div class="panel-head">
+            <h2 id="hist-det-titulo">Detalle del paro</h2>
+            <button type="button" class="btn btn-sm btn-ghost" id="hist-det-cerrar">Cerrar</button>
+          </div>
+          <div class="grid-2">
+            <dl class="acc-dl hist-dl" id="hist-det-datos"></dl>
+            <div>
+              <h3>Técnicos participantes</h3>
+              <ul class="part-list" id="hist-det-tecnicos"></ul>
+              <h3>Evidencias</h3>
+              <div class="hist-evidencias" id="hist-det-evidencias"></div>
+            </div>
+          </div>
+          <h3>Eventos</h3>
+          <div class="table-wrap">
+            <table class="table" id="hist-det-eventos">
+              <thead><tr><th>Fecha / hora</th><th>Evento</th><th>Actor</th><th>Detalle</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
       <div class="view" id="view-operadores" hidden>
         <section class="panel">
           <div class="panel-head">
@@ -1103,6 +1329,13 @@
           <form id="form-operador" class="form">
             <div class="form-grid">
               <div class="filter-group">
+                <label for="opa-rol">Tipo de cuenta</label>
+                <select id="opa-rol">
+                  <option value="mantenimiento_op">Operador de mantenimiento (atiende paros, usuario + PIN)</option>
+                  <option value="tecnico_consulta">Técnico de consulta (solo lectura, contraseña)</option>
+                </select>
+              </div>
+              <div class="filter-group" id="opa-numero-grupo">
                 <label for="opa-numero">Número de empleado (KOIDE MES)</label>
                 <input id="opa-numero" list="opa-personal" autocomplete="off" required />
                 <datalist id="opa-personal"></datalist>
@@ -1115,9 +1348,13 @@
                 <label for="opa-usuario">Usuario</label>
                 <input id="opa-usuario" maxlength="60" autocomplete="off" autocapitalize="none" spellcheck="false" required />
               </div>
-              <div class="filter-group">
+              <div class="filter-group" id="opa-pin-grupo">
                 <label for="opa-pin">PIN (4 dígitos)</label>
                 <input id="opa-pin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password" required />
+              </div>
+              <div class="filter-group" id="opa-password-grupo" hidden>
+                <label for="opa-password">Contraseña (mín. 8)</label>
+                <input id="opa-password" type="password" minlength="8" autocomplete="new-password" />
               </div>
             </div>
             <button class="btn" id="opa-guardar" type="submit">Dar de alta</button>
@@ -1218,8 +1455,51 @@
           </div>
         </section>
       </div>
+
+      <!-- ================= CONFIGURACION DEL SISTEMA ================= -->
+      <div class="view" id="view-configuracion" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Configuración del sistema</h2>
+            <span class="badge badge-muted" id="cfg-estado">—</span>
+          </div>
+          <p class="panel-hint">
+            Parámetros globales de Mantenimiento. Solo un administrador puede modificarlos y cada cambio queda registrado
+            (quién, cuándo, valor anterior y nuevo).
+          </p>
+          <form id="form-configuracion" class="form cfg-form" novalidate>
+            <div id="cfg-grupos"></div>
+            <div class="form-actions">
+              <button type="submit" class="btn" id="cfg-guardar">Guardar configuración</button>
+              <span class="cfg-msg" id="cfg-msg" role="status" aria-live="polite"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Historial de cambios</h2>
+            <span class="badge badge-muted">últimos 50</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tabla-cfg-auditoria">
+              <thead>
+                <tr>
+                  <th>Fecha / hora</th>
+                  <th>Usuario</th>
+                  <th>Parámetro</th>
+                  <th>Valor anterior</th>
+                  <th>Valor nuevo</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     </main>
   </div>
+  <div class="nav-backdrop" id="nav-backdrop" aria-hidden="true"></div>
 
   <footer class="foot">
     Paros de mantenimiento: fuente oficial <strong>KOIDE MES</strong>
@@ -1229,5 +1509,6 @@
   <script src="vendor/chart.umd.min.js"></script>
   <script src="sesion.js"></script>
   <script src="app.js"></script>
+  <script src="ui-shell.js"></script>
 </body>
 </html>

@@ -14,6 +14,14 @@ const store = require("./lib/store");
 const auth = require("./lib/auth");
 const atenciones = require("./lib/atenciones");
 const operadores = require("./lib/operadores");
+const historico = require("./lib/historico");
+const auditoria = require("./lib/auditoria");
+const configuracion = require("./lib/configuracion");
+const contramedidas = require("./lib/contramedidas");
+const fuenteCm = require("./lib/contramedidasFuente");
+const recomendacionesCm = require("./lib/contramedidasRecomendaciones");
+const programacionCm = require("./lib/contramedidasProgramacion");
+const aprobacionCm = require("./lib/contramedidasAprobacion");
 
 const ROOT = __dirname;
 const PYTHON = env("PYTHON_PATH", process.platform === "win32" ? "python" : "python3");
@@ -449,7 +457,97 @@ function docListDisk(dir) {
 // Los scripts Python leen DB_* / rutas de Excel del mismo entorno (.env).
 const PY_OPTS = { timeout: 120000, cwd: ROOT, env: { ...process.env, PYTHONIOENCODING: "utf-8" } };
 
-async function handleApi(req, res, url) {
+/* ---------- Configuracion del sistema y programacion de contramedidas ----------
+ * Solo llega aqui mantenimiento_admin (autorizacion por rol en el servidor);
+ * las escrituras vuelven a exigir la capacidad "admin" por si cambian los roles. */
+
+const ERRORES_CM = [configuracion.ConfigError, aprobacionCm.AprobacionError, historico.HistoricoError, contramedidas.ContramedidaError];
+
+async function handleProgramacionCm(req, res, url, user) {
+  const soloAdmin = () => {
+    if (auth.puede(user, "admin")) return true;
+    sendJson(res, 403, { error: "Solo un administrador puede hacer este cambio" });
+    return false;
+  };
+  try {
+    if (url === "/api/configuracion" && req.method === "GET") {
+      sendJson(res, 200, { parametros: await configuracion.listar() });
+      return true;
+    }
+    if (url === "/api/configuracion" && req.method === "PUT") {
+      if (!soloAdmin()) return true;
+      const body = await readBody(req);
+      const cambios = await configuracion.guardar(body.valores, user);
+      for (const c of cambios) log(`[config] ${user.username} cambio ${c.clave}: ${JSON.stringify(c.anterior)} -> ${JSON.stringify(c.nuevo)}`);
+      sendJson(res, 200, { cambios, parametros: await configuracion.listar() });
+      return true;
+    }
+    if (url === "/api/auditoria" && req.method === "GET") {
+      const q = new URL(req.url, "http://x").searchParams;
+      sendJson(res, 200, await auditoria.listar({ entidad: q.get("entidad"), entidadId: q.get("entidadId"), limite: q.get("limite") }));
+      return true;
+    }
+    // Ejecuta la programacion automatica (idempotente). La pantalla la llama al
+    // abrir Contramedidas; ademas corre sola cada CONTRAMEDIDAS_AUTO_MS.
+    if (url === "/api/contramedidas/programacion-automatica" && req.method === "POST") {
+      if (!soloAdmin()) return true;
+      const r = await programacionCm.ejecutar({ user });
+      for (const c of r.creadas) log(`[contramedidas] Propuesta automatica #${c.id}: ${c.equipo} · ${c.categoria} para el ${c.fechaPropuesta} (pendiente de aprobacion)`);
+      sendJson(res, 200, r);
+      return true;
+    }
+    if (url === "/api/contramedidas/propuestas" && req.method === "GET") {
+      const q = new URL(req.url, "http://x").searchParams;
+      const estados = (q.get("estado") || "").split(",").filter(Boolean);
+      sendJson(res, 200, estados.length === 1 && estados[0] === "PENDIENTE_APROBACION" ? await aprobacionCm.pendientes() : await aprobacionCm.listar({ estados }));
+      return true;
+    }
+    const mp = url.match(/^\/api\/contramedidas\/propuestas\/(\d+)\/(aprobar|rechazar|reprogramar|fechas-disponibles)$/);
+    if (mp && mp[2] === "fechas-disponibles" && req.method === "GET") {
+      sendJson(res, 200, await aprobacionCm.fechasDisponibles(mp[1]));
+      return true;
+    }
+    if (mp && req.method === "POST") {
+      if (!soloAdmin()) return true;
+      const body = await readBody(req);
+      if (mp[2] === "aprobar") {
+        const r = await aprobacionCm.aprobar(mp[1], user);
+        log(`[contramedidas] ${user.username} aprobo la propuesta #${mp[1]} (${r.propuesta.equipo.codigo}) para el ${r.propuesta.fechaConfirmada}; contramedida ${r.contramedida.id}${r.contramedida.mesId ? ` (MES #${r.contramedida.mesId})` : ""}`);
+        sendJson(res, 200, r);
+      } else if (mp[2] === "rechazar") {
+        const p = await aprobacionCm.rechazar(mp[1], body.motivo, user);
+        log(`[contramedidas] ${user.username} rechazo la propuesta #${mp[1]} (${p.equipo.codigo}): ${p.motivo}`);
+        sendJson(res, 200, p);
+      } else {
+        const p = await aprobacionCm.reprogramar(mp[1], body.fecha, body.motivo, user);
+        log(`[contramedidas] ${user.username} reprogramo la propuesta #${mp[1]} (${p.equipo.codigo}) al ${p.fechaPropuesta}: ${p.motivo}`);
+        sendJson(res, 200, p);
+      }
+      return true;
+    }
+  } catch (err) {
+    if (ERRORES_CM.some((E) => err instanceof E)) {
+      sendJson(res, err.status, { error: err.message, ...(err.extra || {}) });
+      return true;
+    }
+    throw err;
+  }
+  return false;
+}
+
+// Programacion automatica periodica (0 = solo desde la pantalla).
+const CM_AUTO_MS = Number(env("CONTRAMEDIDAS_AUTO_MS", String(30 * 60 * 1000)));
+
+async function programacionAutomaticaPeriodica() {
+  try {
+    const r = await programacionCm.ejecutar();
+    for (const c of r.creadas) log(`[contramedidas] Propuesta automatica #${c.id}: ${c.equipo} · ${c.categoria} para el ${c.fechaPropuesta} (pendiente de aprobacion)`);
+  } catch (err) {
+    log(`[contramedidas] Programacion automatica no disponible: ${err.message}`);
+  }
+}
+
+async function handleApi(req, res, url, user) {
   if (url === "/api/gastos" && req.method === "GET") {
     try {
       const data = await store.loadGastos();
@@ -630,26 +728,53 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, await store.listContramedidas());
     return true;
   }
+  // Recomendaciones por acumulacion de fallas (equipo + categoria >= umbral),
+  // calculadas por KOIDE MES para CUALQUIER proceso. Se muestran debajo de
+  // "Agendar contramedida"; al programar una, se registra tambien en el MES.
+  if (url === "/api/contramedidas/recomendaciones" && req.method === "GET") {
+    try {
+      sendJson(res, 200, await recomendacionesCm.conProgramacion());
+    } catch (err) {
+      if (err instanceof historico.HistoricoError) sendJson(res, err.status, { error: err.message, ...err.extra });
+      else throw err;
+    }
+    return true;
+  }
   if (url === "/api/contramedidas" && req.method === "POST") {
     const body = await readBody(req);
-    const cm = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-      tipo: body.tipo || "Falla común",
-      maquina: String(body.maquina || ""),
-      maquinaNombre: String(body.maquinaNombre || ""),
-      fallaComun: String(body.fallaComun || ""),
-      referencia: String(body.referencia || body.maquina || ""),
-      categoria: String(body.categoria || ""),
-      descripcion: String(body.descripcion || ""),
-      responsable: String(body.responsable || ""),
-      fechaLimite: body.fechaLimite || "",
-      estado: body.estado || "Pendiente",
-      creada: new Date().toISOString(),
-    };
-    await store.insertContramedida(cm);
+    // Programada a mano desde una recomendacion: se ubica su ciclo ANTES de
+    // registrarla (despues el MES ya la da por atendida) para dejarla en
+    // "Contramedidas confirmadas" con origen manual.
+    let reco = null;
+    if (body.recomendacionClave) {
+      try {
+        const d = await recomendacionesCm.detectar();
+        reco = d.recomendaciones.find((r) => (body.recomendacionCiclo ? r.ciclo === body.recomendacionCiclo : r.clave === body.recomendacionClave)) || null;
+      } catch {}
+    }
+    let cm;
+    try {
+      cm = await contramedidas.crear(body, user);
+    } catch (err) {
+      if (err instanceof contramedidas.ContramedidaError) {
+        sendJson(res, err.status, { error: err.message, ...err.extra });
+        return true;
+      }
+      throw err;
+    }
+    if (cm.mesId) log(`[contramedidas] ${user.username} programo la contramedida ${cm.id} (${cm.maquina}) registrada en el MES como #${cm.mesId}`);
+    else if (cm.recomendacionClave) log(`[contramedidas] ${user.username} programo la contramedida ${cm.id} (${cm.maquina}) para la recomendacion ${cm.recomendacionClave}`);
+    if (reco && cm.recomendacionClave) {
+      try {
+        await aprobacionCm.registrarManual(cm, reco, user);
+      } catch (err) {
+        log(`[contramedidas] AVISO: no se pudo registrar la programacion manual de ${cm.id} (${reco.ciclo}): ${err.message}`);
+      }
+    }
     sendJson(res, 200, cm);
     return true;
   }
+  if (await handleProgramacionCm(req, res, url, user)) return true;
   const m = url.match(/^\/api\/contramedidas\/([^/]+)$/);
   if (m && req.method === "PUT") {
     const body = await readBody(req);
@@ -659,7 +784,18 @@ async function handleApi(req, res, url) {
       return true;
     }
     const cm = await store.updateContramedida({ ...actual, ...body, id: m[1] });
-    sendJson(res, 200, cm);
+    // Espejo del estado en el MES (si la contramedida nacio de una recomendacion).
+    let mesSync = null;
+    if (cm.mesId) {
+      try {
+        await historico.actualizarEnMes(cm.mesId, { estado: body.estado, trabajoRealizado: body.trabajoRealizado, responsable: body.responsable, fechaProgramada: body.fechaLimite }, user);
+        mesSync = true;
+      } catch (err) {
+        mesSync = false;
+        log(`[contramedidas] AVISO: no se pudo reflejar la contramedida ${cm.id} en el MES (#${cm.mesId}): ${err.message}`);
+      }
+    }
+    sendJson(res, 200, mesSync === null ? cm : { ...cm, mesSync });
     return true;
   }
   if (m && req.method === "DELETE") {
@@ -778,8 +914,8 @@ async function handleApi(req, res, url) {
 
 /* ---------- Autenticacion, roles y operador de mantenimiento ---------- */
 
-const { ADMIN, OP } = auth.ROLES;
-const HOME = { [ADMIN]: "/", [OP]: "/operador-mantenimiento" };
+const { ADMIN, OP, CONSULTA } = auth.ROLES;
+const HOME = { [ADMIN]: "/", [OP]: "/operador-mantenimiento", [CONSULTA]: "/" };
 
 // Archivos que se sirven sin sesion (pantalla de login y recursos comunes).
 const PUBLIC_FILES = new Set(["/login.html", "/login.js", "/acceso.css", "/styles.css", "/favicon.ico"]);
@@ -835,7 +971,7 @@ async function handleAuth(req, res, url, user) {
   }
   if (url === "/api/auth/me" && req.method === "GET") {
     if (!user) return sendJson(res, 401, { error: "Sesion no iniciada" }), true;
-    sendJson(res, 200, { user, home: HOME[user.rol] });
+    sendJson(res, 200, { user, home: HOME[user.rol], capacidades: [...(auth.CAPACIDADES[user.rol] || [])] });
     return true;
   }
   return false;
@@ -886,11 +1022,18 @@ async function handleOperador(req, res, url, user) {
       refresh().catch(() => {});
       return sendJson(res, 200, a);
     }
+    m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/evidencias$/);
+    if (m && req.method === "POST") {
+      const body = await readBody(req, 35e6);
+      const a = await atenciones.agregarEvidencia(m[1], user, body);
+      log(`[operador] Paro ${a.codigoReporte}: evidencia agregada por ${user.username} (#${user.numeroEmpleado})`);
+      return sendJson(res, 201, a);
+    }
     m = url.match(/^\/api\/operador\/atenciones\/(\d+)\/finalizar$/);
     if (m && req.method === "POST") {
-      const body = await readBody(req, 15e6);
+      const body = await readBody(req, 35e6);
       const a = await atenciones.finalizar(m[1], user, body);
-      log(`[operador] Paro ${a.codigoReporte} finalizado por ${user.username} (#${user.numeroEmpleado}); codigo de cierre generado`);
+      log(`[operador] Paro ${a.codigoReporte} finalizado y CERRADO por ${user.username} (#${user.numeroEmpleado})`);
       refresh().catch(() => {});
       return sendJson(res, 200, a);
     }
@@ -915,6 +1058,37 @@ async function handleTerminal(req, res) {
     error: "El codigo de cierre se valida en KOIDE MES (POST /api/tiempo-operativo/:id/cerrar). Este endpoint fue retirado.",
     code: "VALIDACION_EN_MES",
   });
+}
+
+// Historico general de paros (KOIDE MES, cualquier proceso). Solo lectura:
+// administrador y tecnico_consulta.
+async function handleHistorico(req, res, url, user) {
+  if (req.method !== "GET") return sendJson(res, 405, { error: "Solo lectura" }), true;
+  try {
+    if (url === "/api/historico/catalogos") {
+      const c = await koideGeneral.catalogos();
+      return sendJson(res, 200, { categorias: c.categorias || [], procesos: c.procesos || [], personal: c.personal || [] }), true;
+    }
+    if (url === "/api/historico/paros") {
+      const params = Object.fromEntries(new URL(req.url, "http://x").searchParams);
+      return sendJson(res, 200, await historico.consultar(params)), true;
+    }
+    let m = url.match(/^\/api\/historico\/paros\/(\d+)$/);
+    if (m) return sendJson(res, 200, await historico.detalle(m[1])), true;
+    m = url.match(/^\/api\/historico\/paros\/(\d+)\/evidencias\/(\d+)$/);
+    if (m) {
+      const f = await historico.evidencia(m[1], m[2]);
+      if (!f) return sendJson(res, 404, { error: "Evidencia no encontrada" }), true;
+      res.writeHead(200, { "Content-Type": f.mime, "Cache-Control": "private, max-age=86400" });
+      res.end(f.buffer);
+      return true;
+    }
+  } catch (err) {
+    if (err instanceof historico.HistoricoError) return sendJson(res, err.status, { error: err.message, ...err.extra }), true;
+    if (err instanceof koideGeneral.KoideGeneralError) return sendJson(res, err.status, { error: err.message, code: err.code }), true;
+    throw err;
+  }
+  return false;
 }
 
 // Operadores de mantenimiento (usuario + PIN + numero de empleado): los
@@ -945,6 +1119,11 @@ async function handleOperadoresAdmin(req, res, url, user) {
     }
     if (url === "/api/admin/operadores" && req.method === "POST") {
       const b = await readBody(req, 10e3);
+      if (b.rol === CONSULTA) {
+        const o = await operadores.altaConsulta({ nombre: b.nombre, username: b.username, password: b.password });
+        log(`[admin] ${user.username} dio de alta al usuario de consulta ${o.username}`);
+        return sendJson(res, 201, o), true;
+      }
       const o = await operadores.alta({ nombre: b.nombre, username: b.username, pin: b.pin, numeroEmpleado: b.numeroEmpleado, activo: b.activo });
       log(`[admin] ${user.username} dio de alta al operador ${o.username} (#${o.numeroEmpleado})`);
       return sendJson(res, 201, o), true;
@@ -995,7 +1174,7 @@ async function handleApp(req, res, url, user) {
       count: cache.records.length,
     });
   }
-  const handled = await handleApi(req, res, url);
+  const handled = await handleApi(req, res, url, user);
   if (!handled) sendJson(res, 404, { error: "No encontrado" });
 }
 
@@ -1038,10 +1217,25 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, "/login");
     }
 
+    // AUTORIZACION POR ROL (en el backend; la interfaz solo refleja):
+    //   mantenimiento_admin  todo
+    //   mantenimiento_op     solo /api/operador/* (atencion de paros)
+    //   tecnico_consulta     SOLO LECTURA: /api/data, /api/refresh, /api/historico/*
+    //                        (desempeno, tiempo muerto, MTTR/MTBF, historico).
+    //                        Ninguna escritura, ninguna accion de tecnico.
     if (isApi) {
       if (url.startsWith("/api/operador/")) {
-        if (user.rol !== OP && user.rol !== ADMIN) return sendJson(res, 403, { error: "Sin permiso" });
+        if (!auth.puede(user, "operador")) return sendJson(res, 403, { error: "Sin permiso" });
         return await handleOperador(req, res, url, user);
+      }
+      if (url.startsWith("/api/historico/")) {
+        if (!auth.puede(user, "historico")) return sendJson(res, 403, { error: "Sin permiso" });
+        if (await handleHistorico(req, res, url, user)) return;
+        return sendJson(res, 404, { error: "No encontrado" });
+      }
+      if (user.rol === CONSULTA) {
+        if (req.method === "GET" && (url === "/api/data" || url === "/api/refresh")) return await handleApp(req, res, url, user);
+        return sendJson(res, 403, { error: "Sin permiso: tu usuario es de solo consulta" });
       }
       // Todo lo demas es el dashboard administrativo (funcionalidad existente).
       if (user.rol !== ADMIN) return sendJson(res, 403, { error: "Sin permiso" });
@@ -1051,10 +1245,10 @@ const server = http.createServer(async (req, res) => {
     if (file === null) return sendJson(res, 400, { error: "Ruta invalida" });
     if (SESSION_FILES.has(file)) return serveStatic(req, res, file);
     if (OP_FILES.has(file)) {
-      if (user.rol !== OP && user.rol !== ADMIN) return redirect(res, HOME[user.rol] || "/login");
+      if (!auth.puede(user, "operador")) return redirect(res, HOME[user.rol] || "/login");
       return serveStatic(req, res, file);
     }
-    if (user.rol !== ADMIN) {
+    if (!auth.puede(user, "dashboard")) {
       if (file === "/index.html") return redirect(res, HOME[user.rol] || "/login");
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
       return res.end("Sin permiso");
@@ -1086,6 +1280,12 @@ async function start() {
   const [{ n }] = await db.query("SELECT COUNT(*) AS n FROM usuarios WHERE activo = 1");
   if (!Number(n)) log("[auth] AVISO: no hay usuarios activos. Cree uno con: node scripts/usuarios.js crear <usuario> mantenimiento_admin \"<nombre>\"");
   await loadCache();
+  server.on("error", (err) => {
+    if (err.code !== "EADDRINUSE") throw err;
+    console.error(`[inicio] El puerto ${port} ya esta en uso (probablemente otro "npm start" sigue corriendo).`);
+    console.error(`[inicio] Detengalo con: npm run stop   (o use otro puerto: PORT=${port + 1} npm start)`);
+    db.closePool().finally(() => process.exit(1));
+  });
   server.listen(port, host, () => {
     log(`Metricos de Mantenimiento en http://${host || "localhost"}:${port}`);
     refresh().then(() => {
@@ -1095,6 +1295,10 @@ async function start() {
     if (koideGeneral.configurado() && REFRESH_MS > 0) {
       setInterval(() => refresh(), REFRESH_MS).unref();
       log(`[schedule] Resincronizacion con KOIDE MES cada ${Math.round(REFRESH_MS / 1000)} s`);
+    }
+    if ((!fuenteCm.esMes() || koideGeneral.configurado()) && CM_AUTO_MS > 0) {
+      setInterval(programacionAutomaticaPeriodica, CM_AUTO_MS).unref();
+      log(`[schedule] Programacion automatica de contramedidas cada ${Math.round(CM_AUTO_MS / 60000)} min`);
     }
   });
 }

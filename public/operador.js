@@ -3,7 +3,7 @@
 // Pantalla del operador de mantenimiento:
 //   /operador-mantenimiento                 codigo de reporte
 //   /operador-mantenimiento/atender/<id>    captura del trabajo + evidencia
-//   /operador-mantenimiento/cierre/<id>     codigo de cierre
+//   /operador-mantenimiento/cierre/<id>     paro cerrado (sin codigo de cierre, MES mig 090)
 (function () {
   const $ = (id) => document.getElementById(id);
   const BASE = "/operador-mantenimiento";
@@ -131,7 +131,7 @@
       const d = await api("GET", "/api/operador/atenciones");
       pintarLista("op-abiertas", d.abiertas, (a) => ({ texto: `Paro ${a.codigoReporte} · ${a.reporte.maquina || ""}${a.estado === "EN_ESPERA_EXTERNA" ? " · en espera externa" : ""}`, boton: a.esParticipante ? "Continuar" : "Ver", ir: `${BASE}/atender/${a.id}` }));
       pintarLista("op-encurso", d.enCurso || [], (a) => ({ texto: `Paro ${a.codigoReporte} · ${a.reporte.maquina || ""} · ${participantesTexto(a) || ""}`, boton: "Ver / tomar continuidad", ir: `${BASE}/atender/${a.id}` }));
-      pintarLista("op-recientes", d.recientes, (a) => ({ texto: `Reporte ${a.codigoReporte} · ${a.reporte.maquina || ""}`, mono: a.codigoCierre, estado: a.estado, boton: "Ver", ir: `${BASE}/cierre/${a.id}` }));
+      pintarLista("op-recientes", d.recientes, (a) => ({ texto: `Reporte ${a.codigoReporte} · ${a.reporte.maquina || ""}`, estado: a.estado, boton: "Ver", ir: `${BASE}/cierre/${a.id}` }));
     } catch (err) {
       error(err.message);
     }
@@ -155,7 +155,7 @@
       if (v.estado) {
         const b = document.createElement("span");
         b.className = `acc-badge ${v.estado}`;
-        b.textContent = v.estado === "CERRADO" ? "Cerrado en terminal" : v.estado === "ANULADO" ? "Anulado" : "Pendiente de terminal";
+        b.textContent = v.estado === "CERRADO" ? "Cerrado" : v.estado === "ANULADO" ? "Anulado" : "Atención terminada";
         txt.append(b);
       }
       const btn = document.createElement("button");
@@ -205,7 +205,7 @@
         : a.puedeTomarContinuidad ? "VER ATENCIÓN / TOMAR CONTINUIDAD" : "VER ATENCIÓN (SOLO LECTURA)";
     } else if (consulta.atencion) {
       $("conf-aceptar").hidden = false;
-      $("conf-aceptar").textContent = "VER CÓDIGO DE CIERRE";
+      $("conf-aceptar").textContent = "VER REPORTE";
     } else {
       $("conf-aceptar").textContent = "INICIAR ATENCIÓN";
     }
@@ -262,8 +262,55 @@
         ? `Espera externa acumulada: ${ee.minutos} min (no cuenta como reparación).`
         : "Si la reparación depende de algo externo (fabricar una pieza, proveedor), pausa la atención: ese tiempo no cuenta como reparación.";
     $("at-finalizar").disabled = espera;
+    // Evidencia durante la atencion (MES mig 090) y estado de la foto "despues".
+    $("at-evidencia-card").hidden = !atencion.puedeAgregarEvidencia;
+    pintarEvidencias($("at-evidencias"), atencion);
+    const hayDespues = (atencion.fotos || []).some((f) => f.tipo === "despues");
+    $("at-foto-despues-label").textContent = hayDespues ? "Foto después (ya hay una registrada; opcional)" : "Foto después *";
+    $("at-fotos-titulo").textContent = hayDespues
+      ? "Evidencia adicional (JPG o PNG, máx. 5 MB) — ya existe una foto «después»"
+      : "Evidencia (JPG o PNG, máx. 5 MB) — la foto «después» es obligatoria";
     cargarCategorias().catch((err) => error(err.message));
   }
+
+  const TIPO_EV = { antes: "antes", durante: "durante", despues: "después" };
+  function pintarEvidencias(el, a) {
+    el.innerHTML = "";
+    for (const f of a.fotos || []) {
+      const li = document.createElement("li");
+      li.dataset.tipo = f.tipo;
+      const img = document.createElement("img");
+      img.src = f.url;
+      img.alt = f.tipo;
+      img.className = "acc-thumb";
+      const txt = document.createElement("span");
+      const quien = f.subidoPor ? ` · #${f.subidoPor.numeroEmpleado || "?"}${f.subidoPor.usuario ? ` (${f.subidoPor.usuario})` : ""}` : "";
+      txt.textContent = ` ${TIPO_EV[f.tipo] || f.tipo}${f.descripcion ? ` · ${f.descripcion}` : ""}${quien}${f.creado ? ` · ${fecha(f.creado)}` : ""}`;
+      li.append(img, txt);
+      el.appendChild(li);
+    }
+  }
+
+  preview("at-ev-archivo", "at-ev-prev");
+  $("at-ev-agregar").addEventListener("click", async () => {
+    const f = $("at-ev-archivo").files[0];
+    if (!f) return error("Selecciona una foto para agregar como evidencia.");
+    $("at-ev-agregar").disabled = true;
+    error("");
+    try {
+      atencion = await api("POST", `/api/operador/atenciones/${atencion.id}/evidencias`, {
+        fotos: [{ tipo: $("at-ev-tipo").value, name: f.name, base64: await toB64(f), descripcion: $("at-ev-desc").value.trim() }],
+      });
+      $("at-ev-archivo").value = "";
+      $("at-ev-desc").value = "";
+      $("at-ev-prev").hidden = true;
+      pantallaAtender();
+    } catch (err) {
+      error(err.message);
+    } finally {
+      $("at-ev-agregar").disabled = false;
+    }
+  });
 
   $("at-espera").addEventListener("click", async () => {
     $("at-espera").disabled = true;
@@ -354,8 +401,9 @@
     if (!categoria) return error("Selecciona la categoría de falla.");
     if (!problema) return error("Describe el problema detectado.");
     if (!trabajo) return error("Escribe la descripción del trabajo realizado.");
-    if (!$("at-foto-despues").files[0]) return error("La foto «después» es obligatoria: sin evidencia no se genera el código de cierre.");
-    if (!confirm("¿Completar el reporte? Después no se podrá modificar.")) return;
+    const hayDespues = (atencion.fotos || []).some((f) => f.tipo === "despues");
+    if (!hayDespues && !$("at-foto-despues").files[0]) return error("La foto «después» es obligatoria: sin evidencia de la reparación terminada no se cierra el paro.");
+    if (!confirm("¿Completar el reporte? El paro quedará CERRADO y no se podrá modificar.")) return;
     $("at-finalizar").disabled = true;
     error("");
     try {
@@ -386,7 +434,15 @@
   function pantallaCierre() {
     if (EN_CURSO.includes(atencion.estado)) return ir(`${BASE}/atender/${atencion.id}`, true);
     mostrar("paso-cierre");
-    $("cierre-codigo").textContent = atencion.codigoCierre || "—";
+    const cerrado = atencion.estado === "CERRADO";
+    $("cierre-titulo").textContent = cerrado ? "Paro cerrado" : atencion.estado === "ANULADO" ? "Paro anulado" : "Reporte completado";
+    $("cierre-sub").textContent = cerrado
+      ? `La atención quedó registrada y el paro está cerrado en KOIDE MES${atencion.cerradoEn ? ` (${fecha(atencion.cerradoEn)})` : ""}.`
+      : atencion.estado === "ANULADO" ? "Un supervisor anuló este paro." : "Atención terminada (registro histórico anterior al cierre directo).";
+    // Solo el historico cerrado con el doble codigo conserva un codigo.
+    $("cierre-codigo").hidden = !atencion.codigoCierre;
+    $("cierre-codigo").textContent = atencion.codigoCierre || "";
+    pintarEvidencias($("cierre-evidencias"), atencion);
     dl($("cierre-datos"), [
       ["Código de atención", atencion.codigoReporte],
       ["Máquina", [atencion.reporte.maquina, atencion.reporte.maquinaNombre].filter(Boolean).join(" · ")],
@@ -399,8 +455,9 @@
       ["Tiempo de respuesta", atencion.responseTimeMinutes != null ? `${atencion.responseTimeMinutes} min` : null],
       ["Tiempo de reparación", atencion.repairTimeMinutes != null ? `${atencion.repairTimeMinutes} min` : null],
       ["Espera externa", atencion.esperaExterna && atencion.esperaExterna.minutos ? `${atencion.esperaExterna.minutos} min` : null],
+      ["Duración total del paro", atencion.downtimeMinutes != null ? `${atencion.downtimeMinutes} min` : null],
       ["Evidencia", atencion.fotos.length ? `${atencion.fotos.length} foto(s)` : "Sin fotos"],
-      ["Estado", atencion.estado === "CERRADO" ? `Cerrado en terminal (${fecha(atencion.cierreConfirmadoEn)})` : atencion.estado === "ANULADO" ? "Anulado por supervisión" : "Pendiente de capturar en la terminal"],
+      ["Estado", cerrado ? `Cerrado por mantenimiento${atencion.cerradoEn ? ` (${fecha(atencion.cerradoEn)})` : ""}` : atencion.estado === "ANULADO" ? "Anulado por supervisión" : "Atención terminada"],
     ]);
   }
 
@@ -444,6 +501,7 @@
       $("op-usuario").textContent = d.user.numeroEmpleado ? `${d.user.nombre} · #${d.user.numeroEmpleado}` : d.user.nombre;
       $("op-dashboard").hidden = d.user.rol !== "mantenimiento_admin";
       $("op-solo-lectura").hidden = Boolean(d.user.numeroEmpleado);
+      $("op-flujo").hidden = !d.user.numeroEmpleado;
     })
     .catch(() => {});
 

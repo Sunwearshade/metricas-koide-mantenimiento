@@ -26,6 +26,7 @@
     <div class="acc-col">
       <p class="acc-msg error" id="op-error" role="alert" hidden></p>
       <p class="acc-msg warn" id="op-solo-lectura" hidden>Tu usuario no tiene número de empleado: puedes consultar los paros, pero no aceptarlos ni finalizarlos. Pide al administrador que lo registre.</p>
+      <p class="acc-msg" id="op-flujo" hidden>Al completar el reporte el paro queda <strong>cerrado</strong>: ya no hay código de cierre ni captura en la terminal de producción.</p>
 
       <!-- 1. Codigo del reporte -->
       <section id="paso-codigo">
@@ -90,6 +91,26 @@
             <button class="acc-btn ok" id="at-reanudar" type="button" hidden>REANUDAR ATENCIÓN</button>
           </div>
         </div>
+        <div class="acc-card" id="at-evidencia-card" hidden>
+          <h3 class="acc-h2">Evidencia durante la atención</h3>
+          <p class="acc-sub">Fotos «antes», «durante» o «después» (JPG/PNG, máx. 5 MB). Quedan vinculadas al paro con tu usuario y no se borran al cerrar.</p>
+          <ul class="acc-list" id="at-evidencias"></ul>
+          <div class="acc-fotos">
+            <div class="acc-foto">
+              <label class="acc-field"><span>Tipo</span>
+                <select id="at-ev-tipo">
+                  <option value="antes">Antes</option>
+                  <option value="durante" selected>Durante</option>
+                  <option value="despues">Después</option>
+                </select>
+              </label>
+              <label class="acc-field"><span>Descripción (opcional)</span><input type="text" id="at-ev-desc" maxlength="255" /></label>
+              <input type="file" id="at-ev-archivo" accept="image/jpeg,image/png" />
+              <img id="at-ev-prev" alt="" hidden />
+            </div>
+          </div>
+          <button class="acc-btn ghost" id="at-ev-agregar" type="button">AGREGAR EVIDENCIA</button>
+        </div>
         <form class="acc-card" id="form-finalizar" novalidate>
           <h3 class="acc-h2">Captura del trabajo</h3>
           <label class="acc-field">
@@ -110,7 +131,7 @@
             <span>Comentarios</span>
             <textarea id="at-comentarios" maxlength="5000" placeholder="Opcional"></textarea>
           </label>
-          <h3 class="acc-h2">Evidencia (JPG o PNG, máx. 5 MB) — la foto «después» es obligatoria</h3>
+          <h3 class="acc-h2" id="at-fotos-titulo">Evidencia (JPG o PNG, máx. 5 MB) — la foto «después» es obligatoria</h3>
           <div class="acc-fotos">
             <div class="acc-foto">
               Foto antes
@@ -118,25 +139,26 @@
               <img id="at-prev-antes" alt="" hidden />
             </div>
             <div class="acc-foto">
-              Foto después *
-              <input type="file" id="at-foto-despues" accept="image/jpeg,image/png" required />
+              <span id="at-foto-despues-label">Foto después *</span>
+              <input type="file" id="at-foto-despues" accept="image/jpeg,image/png" />
               <img id="at-prev-despues" alt="" hidden />
             </div>
           </div>
-          <button class="acc-btn ok" id="at-finalizar" type="submit">COMPLETAR REPORTE</button>
+          <button class="acc-btn ok" id="at-finalizar" type="submit">COMPLETAR REPORTE Y CERRAR PARO</button>
           <div class="acc-btn-row">
             <button class="acc-btn ghost" id="at-volver" type="button">Volver (la atención queda en curso)</button>
           </div>
         </form>
       </section>
 
-      <!-- 4. Codigo de cierre -->
+      <!-- 4. Paro cerrado (sin codigo de cierre) -->
       <section id="paso-cierre" hidden>
         <div class="acc-card">
-          <h2 class="acc-title">Reporte completado</h2>
-          <p class="acc-sub">Código de cierre: captúralo en la terminal de producción</p>
-          <div class="acc-cierre" id="cierre-codigo">—</div>
+          <h2 class="acc-title" id="cierre-titulo">Paro cerrado</h2>
+          <p class="acc-sub" id="cierre-sub">La atención quedó registrada y el paro está cerrado en KOIDE MES.</p>
+          <div class="acc-cierre" id="cierre-codigo" hidden>—</div>
           <dl class="acc-dl" id="cierre-datos"></dl>
+          <ul class="acc-list" id="cierre-evidencias"></ul>
           <button class="acc-btn" id="cierre-otro" type="button">ATENDER OTRO REPORTE</button>
         </div>
       </section>

@@ -12,8 +12,10 @@
   --danger: #dc2626;
   --ok: #16a34a;
   --warn: #b45309;
-  --radius: 14px;
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 28px rgba(15, 23, 42, 0.25);
+  --koide: #7cb342;
+  --radius: 6px;
+  --radius-md: 4px;
+  --shadow: 0 1px 2px rgba(2, 6, 23, 0.18), 0 8px 24px rgba(2, 6, 23, 0.18);
 }
 
 * {
@@ -28,7 +30,8 @@ body {
 
 body {
   font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
-  background: linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%) fixed;
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
   color: var(--ink);
   font-size: 16px;
   line-height: 1.45;
@@ -46,6 +49,9 @@ body {
   gap: 12px;
   padding: 14px 20px;
   color: #fff;
+  background: #0b1222;
+  border-top: 3px solid var(--koide);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 .acc-brand {
@@ -57,7 +63,7 @@ body {
 .acc-brand img {
   height: 36px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: 3px;
   padding: 4px 8px;
 }
 
@@ -83,7 +89,7 @@ body {
 .acc-main {
   display: flex;
   justify-content: center;
-  padding: 16px 16px 48px;
+  padding: 32px 16px 48px;
 }
 
 .acc-card {
@@ -110,7 +116,7 @@ body {
   font-size: 1.25rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--brand);
+  color: var(--ink);
 }
 
 .acc-sub {
@@ -139,7 +145,7 @@ body {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid #cbd5e1;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font: inherit;
   background: #fff;
 }
@@ -152,7 +158,8 @@ body {
 .acc-field input:focus,
 .acc-field select:focus,
 .acc-field textarea:focus {
-  outline: 3px solid rgba(8, 145, 178, 0.25);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.22);
   border-color: var(--brand-2);
 }
 
@@ -171,7 +178,7 @@ body {
   width: 100%;
   padding: 14px 18px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--brand);
   color: #fff;
   font: inherit;
@@ -182,7 +189,13 @@ body {
 }
 
 .acc-btn:hover {
-  background: var(--brand-2);
+  background: #0c6680;
+}
+
+.acc-btn:focus-visible,
+.acc-link:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 2px;
 }
 
 .acc-btn:disabled {
@@ -195,8 +208,13 @@ body {
 }
 
 .acc-btn.ghost {
+  background: #fff;
+  color: #334155;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+.acc-btn.ghost:hover {
   background: #f1f5f9;
-  color: var(--ink);
 }
 
 .acc-btn.small {
@@ -212,10 +230,10 @@ body {
 }
 
 .acc-link {
-  background: rgba(255, 255, 255, 0.12);
+  background: transparent;
   color: #fff;
-  border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   padding: 8px 12px;
   font: inherit;
   font-size: 0.85rem;
@@ -223,13 +241,13 @@ body {
 }
 
 .acc-link:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .acc-msg {
   margin: 0 0 16px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font-size: 0.92rem;
 }
 
@@ -284,7 +302,7 @@ body {
 
 .acc-foto {
   border: 1px dashed #cbd5e1;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 10px;
   text-align: center;
   font-size: 0.85rem;
@@ -315,7 +333,7 @@ body {
   padding: 18px 8px;
   margin: 8px 0 16px;
   border: 2px solid #bbf7d0;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: #f0fdf4;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   user-select: all;
@@ -349,7 +367,7 @@ body {
 .acc-badge {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: 3px;
   font-size: 0.75rem;
   font-weight: 700;
   background: #e2e8f0;
@@ -396,3 +414,6 @@ body {
 /* Tecnicos participantes (pantalla del operador) */
 .acc-part { margin: 12px 0; }
 .acc-part .mono { font-weight: 600; margin-left: 6px; white-space: nowrap; }
+
+/* Evidencias (MES mig 090): miniaturas en la atencion y en el cierre */
+.acc-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; vertical-align: middle; margin-right: 6px; border: 1px solid #d0d7de; }

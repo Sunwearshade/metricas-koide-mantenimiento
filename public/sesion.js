@@ -26,7 +26,8 @@
   window.metricosCerrarSesion = cerrarSesion;
 
   function montar(user) {
-    const bar = document.querySelector(".topbar-right");
+    // La sesion va al pie del menu lateral (si existe); si no, a la barra superior.
+    const bar = document.getElementById("menu-sesion") || document.querySelector(".topbar-right");
     if (!bar || document.getElementById("sesion-box")) return;
     const box = document.createElement("div");
     box.id = "sesion-box";

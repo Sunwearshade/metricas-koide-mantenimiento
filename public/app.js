@@ -29,6 +29,18 @@ const state = {
   dolarRate: 17,
   entregas: null,
   entregasTab: -1,
+  // Rol y capacidades del usuario con sesion (las aplica el servidor; aqui
+  // solo se ocultan vistas y acciones que el backend rechazaria).
+  capacidades: null,
+  // Contramedidas por acumulacion (KOIDE MES) y la recomendacion en captura.
+  recomendaciones: [],
+  cmRecomendacion: null,
+  // Programacion automatica: propuestas y Configuracion del sistema.
+  cmPendientes: [],
+  cmPropActual: null,
+  cfg: { parametros: [] },
+  // Historico de paros (KOIDE MES).
+  hist: { filas: [], total: 0, offset: 0, limite: 100, catalogos: null },
 };
 
 const TIPOS_MAQUINA = {
@@ -1726,7 +1738,7 @@ function renderFallasComunes(rows) {
       <td class="num">${fmtNum(f.paros)}</td>
       <td class="num">${fmtNum(f.minutos)}</td>
       <td class="num">${f.pct.toFixed(1)}%</td>
-      <td><button type="button" class="btn btn-sm" data-falla="${escapeHtml(f.categoria)}">Agregar contramedida</button></td>`;
+      <td><button type="button" class="btn btn-sm solo-escritura" data-falla="${escapeHtml(f.categoria)}">Agregar contramedida</button></td>`;
     tbody.appendChild(tr);
   }
   tbody.querySelectorAll("button[data-falla]").forEach((btn) => {
@@ -1841,6 +1853,9 @@ function renderContramedidas() {
 
 function resetForm() {
   state.cmEditId = null;
+  state.cmRecomendacion = null;
+  const hint = $("cm-reco-en-captura");
+  if (hint) hint.remove();
   $("form-contramedida").reset();
   $("cm-estado").value = "Pendiente";
   $("form-titulo").textContent = "Agregar contramedida";
@@ -2087,6 +2102,16 @@ $("form-contramedida").addEventListener("submit", async (e) => {
     fechaLimite: $("cm-fecha").value,
     estado: $("cm-estado").value,
   };
+  // Programada desde una recomendacion por acumulacion: se registra tambien
+  // en KOIDE MES (equipo + categoria) para que la recomendacion se de por
+  // atendida. Solo aplica si sigue siendo el mismo equipo.
+  const reco = state.cmRecomendacion;
+  if (!state.cmEditId && reco && reco.equipo === maquina) {
+    payload.recomendacionClave = reco.clave;
+    payload.recomendacionCiclo = reco.ciclo;
+    payload.categoriaCodigo = reco.categoriaCodigo;
+    payload.descripcion = reco.recomendacion || "";
+  }
   try {
     const res = state.cmEditId
       ? await fetch(`/api/contramedidas/${state.cmEditId}`, {
@@ -2099,9 +2124,13 @@ $("form-contramedida").addEventListener("submit", async (e) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `HTTP ${res.status}`);
+    }
     resetForm();
     await loadContramedidas();
+    if (reco) refrescarProgramacionCm();
   } catch (err) {
     alert("No se pudo guardar: " + err.message);
   }
@@ -2627,6 +2656,13 @@ function switchView(name) {
   if (name === "contramedidas") {
     populateMaquinaSelect();
     populateResponsables();
+    refrescarProgramacionCm({ ejecutar: true });
+  }
+  if (name === "configuracion") {
+    renderConfiguracion();
+  }
+  if (name === "historico") {
+    renderHistoricoView();
   }
   if (name === "documentos") {
     renderDocView();
@@ -2662,6 +2698,11 @@ function rerenderActual() {
 }
 
 async function autoRefreshTodo() {
+  if (state.capacidades && !state.capacidades.includes("escribir")) {
+    await loadData(true);
+    rerenderActual();
+    return;
+  }
   await Promise.allSettled([
     loadData(true),
     loadContramedidas(),
@@ -4352,20 +4393,20 @@ async function renderOperadores() {
     $("opa-personal").innerHTML = (personal || [])
       .map((p) => `<option value="${escapeHtml(p.numeroEmpleado)}">${escapeHtml(p.nombre || "")}</option>`).join("");
     $("opa-numero").dataset.personal = JSON.stringify(personal || []);
-    $("op-admin-cuenta").textContent = `${operadores.filter((o) => o.rol !== "mantenimiento_admin").length} operadores · ${operadores.filter((o) => o.rol === "mantenimiento_admin" && o.numeroEmpleado).length} administradores que atienden paros`;
+    $("op-admin-cuenta").textContent = `${operadores.filter((o) => o.rol === "mantenimiento_op").length} operadores · ${operadores.filter((o) => o.rol === "mantenimiento_admin" && o.numeroEmpleado).length} administradores que atienden paros · ${operadores.filter((o) => o.rol === "tecnico_consulta").length} de consulta`;
     const tbody = $("tabla-operadores").querySelector("tbody");
     tbody.innerHTML = operadores.length ? operadores.map((o) => `
       <tr data-usuario="${escapeHtml(o.username)}">
         <td>${escapeHtml(o.nombre)}</td>
         <td class="mono">${escapeHtml(o.username)}</td>
         <td class="mono">${escapeHtml(o.numeroEmpleado || "—")}</td>
-        <td>${o.rol === "mantenimiento_admin" ? `Administrador${o.numeroEmpleado ? " · atiende paros" : " · solo consulta"}` : "Operador"}</td>
+        <td>${o.rol === "mantenimiento_admin" ? `Administrador${o.numeroEmpleado ? " · atiende paros" : " · sin número"}` : o.rol === "tecnico_consulta" ? "Consulta · solo lectura" : "Operador"}</td>
         <td><span class="badge-status ${o.activo ? "ok" : "open"}">${o.activo ? "Activo" : "Inactivo"}</span></td>
-        <td>${o.rol === "mantenimiento_admin" ? "Contraseña" : o.bloqueoDefinitivo ? '<span class="badge-status open">Bloqueado: restablecer PIN</span>' : o.bloqueado ? '<span class="badge-status warn">Bloqueado 15 min</span>' : o.intentosFallidos ? `${o.intentosFallidos} intento(s) fallido(s)` : "PIN OK"}</td>
+        <td>${o.rol !== "mantenimiento_op" ? "Contraseña" : o.bloqueoDefinitivo ? '<span class="badge-status open">Bloqueado: restablecer PIN</span>' : o.bloqueado ? '<span class="badge-status warn">Bloqueado 15 min</span>' : o.intentosFallidos ? `${o.intentosFallidos} intento(s) fallido(s)` : "PIN OK"}</td>
         <td>${o.pinActualizado ? fmtDateTime(o.pinActualizado) : "—"}</td>
         <td class="op-acciones">
-          ${o.rol === "mantenimiento_admin" ? "" : '<button class="btn btn-small" data-accion="pin" type="button">Restablecer PIN</button>'}
-          <button class="btn btn-small" data-accion="numero" type="button">${o.numeroEmpleado ? "Cambiar número" : "Asignar número"}</button>
+          ${o.rol !== "mantenimiento_op" ? "" : '<button class="btn btn-small" data-accion="pin" type="button">Restablecer PIN</button>'}
+          ${o.rol === "tecnico_consulta" ? "" : `<button class="btn btn-small" data-accion="numero" type="button">${o.numeroEmpleado ? "Cambiar número" : "Asignar número"}</button>`}
           ${o.rol === "mantenimiento_admin" ? "" : `<button class="btn btn-small" data-accion="activo" type="button">${o.activo ? "Desactivar" : "Activar"}</button>`}
         </td>
       </tr>`).join("") : '<tr><td colspan="8" class="panel-hint">Sin personal. Da de alta el primer operador con el formulario.</td></tr>';
@@ -4380,19 +4421,38 @@ $("opa-numero").addEventListener("change", () => {
   if (p && !$("opa-nombre").value.trim()) $("opa-nombre").value = p.nombre || "";
 });
 
+function opaAplicarRol() {
+  const consulta = $("opa-rol").value === "tecnico_consulta";
+  $("opa-numero-grupo").hidden = consulta;
+  $("opa-pin-grupo").hidden = consulta;
+  $("opa-password-grupo").hidden = !consulta;
+  $("opa-numero").required = !consulta;
+  $("opa-pin").required = !consulta;
+  $("opa-password").required = consulta;
+}
+$("opa-rol").addEventListener("change", opaAplicarRol);
+opaAplicarRol();
+
 $("form-operador").addEventListener("submit", async (e) => {
   e.preventDefault();
   opMsg("");
   $("opa-guardar").disabled = true;
   try {
-    const o = await adminApi("POST", "/api/admin/operadores", {
+    const consulta = $("opa-rol").value === "tecnico_consulta";
+    const o = await adminApi("POST", "/api/admin/operadores", consulta ? {
+      rol: "tecnico_consulta",
+      nombre: $("opa-nombre").value.trim(),
+      username: $("opa-usuario").value.trim(),
+      password: $("opa-password").value,
+    } : {
       numeroEmpleado: $("opa-numero").value.trim(),
       nombre: $("opa-nombre").value.trim(),
       username: $("opa-usuario").value.trim(),
       pin: $("opa-pin").value,
     });
     $("form-operador").reset();
-    opMsg(`Operador ${o.username} (#${o.numeroEmpleado}) dado de alta.`);
+    opaAplicarRol();
+    opMsg(consulta ? `Usuario de consulta ${o.username} dado de alta (solo lectura).` : `Operador ${o.username} (#${o.numeroEmpleado}) dado de alta.`);
     renderOperadores();
   } catch (err) {
     opMsg(err.message, true);
@@ -4427,3 +4487,618 @@ $("tabla-operadores").addEventListener("click", async (e) => {
     opMsg(err.message, true);
   }
 });
+
+
+/* ================================================================
+ * ROL Y CAPACIDADES (el servidor decide; aqui solo se oculta lo que rechazaria)
+ *   mantenimiento_admin  todo
+ *   tecnico_consulta     Tiempo muerto · MTTR/MTBF · Desempeño · Histórico
+ * ================================================================ */
+
+const VISTAS_POR_CAPACIDAD = {
+  tiempo: "dashboard", mttr: "dashboard", tecnicos: "dashboard", historico: "historico",
+  contramedidas: "escribir", bonos: "escribir", calendarios: "escribir", documentos: "escribir",
+  gastos: "escribir", entregas: "escribir", operadores: "admin", configuracion: "admin",
+};
+
+function aplicarCapacidades(caps, user) {
+  state.capacidades = caps;
+  const puede = (c) => caps.includes(c);
+  document.querySelectorAll(".menu-item").forEach((b) => {
+    const req = VISTAS_POR_CAPACIDAD[b.dataset.view] || "escribir";
+    b.hidden = !puede(req);
+  });
+  $("btn-atender").hidden = !puede("operador") || !(user && user.numeroEmpleado);
+  document.body.classList.toggle("rol-consulta", !puede("escribir"));
+  if (!puede("escribir")) {
+    const sub = document.querySelector(".brand p");
+    if (sub) sub.textContent = "Consulta · Tiempo muerto · MTTR / MTBF · Desempeño · Histórico";
+  }
+}
+
+fetch("/api/auth/me", { credentials: "same-origin" })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((d) => { if (d && d.capacidades) aplicarCapacidades(d.capacidades, d.user); })
+  .catch(() => {});
+
+/* ================================================================
+ * CONTRAMEDIDAS POR ACUMULACION DE FALLAS (KOIDE MES)
+ * Debajo de "Agendar contramedida": equipo + categoria con >= umbral de horas.
+ * ================================================================ */
+
+async function loadRecomendaciones() {
+  const tbody = $("tabla-recomendaciones").querySelector("tbody");
+  try {
+    const res = await fetch("/api/contramedidas/recomendaciones");
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    const d = await res.json();
+    state.recomendaciones = d.recomendaciones || [];
+    $("cm-reco-umbral").textContent = fmtNum(d.umbralHoras);
+    const pend = state.recomendaciones.filter((r) => r.programacion && r.programacion.estado === "SIN_FECHA").length;
+    $("cm-reco-cuenta").textContent = `${state.recomendaciones.length} recomendación(es) · umbral ${fmtNum(d.umbralHoras)} h${pend ? ` · ${pend} sin fecha automática` : ""}`;
+    renderRecomendaciones();
+  } catch (err) {
+    $("cm-reco-cuenta").textContent = "no disponible";
+    tbody.innerHTML = `<tr><td colspan="8" class="panel-hint">No se pudieron leer las recomendaciones: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+function renderRecomendaciones() {
+  const tbody = $("tabla-recomendaciones").querySelector("tbody");
+  if (!state.recomendaciones.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="panel-hint">Ningún equipo alcanza el umbral de horas acumuladas por categoría de falla.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = state.recomendaciones.map((r, i) => `
+    <tr data-reco="${i}">
+      <td><strong>${escapeHtml(r.equipo.codigo)}</strong>${r.equipo.nombre ? ` · ${escapeHtml(r.equipo.nombre)}` : ""}${r.equipo.idMaquina ? `<br><span class="muted">${escapeHtml(r.equipo.idMaquina)}</span>` : ""}</td>
+      <td>${escapeHtml(r.equipo.proceso || "—")}${r.equipo.area ? ` · ${escapeHtml(r.equipo.area)}` : ""}</td>
+      <td>${escapeHtml(r.categoria.nombre)}</td>
+      <td class="num"><strong>${fmtNum(r.horasAcumuladas)} h</strong></td>
+      <td class="num">${fmtNum(r.paros)}</td>
+      <td>${r.desde ? fmtDate(r.desde) : "—"}</td>
+      <td>${r.hasta ? fmtDate(r.hasta) : "—"}</td>
+      <td class="reco-alerta">⚠️ Se recomienda programar una contramedida / mantenimiento profundo para esta sección.${r.contramedidaPrevia ? `<br><span class="muted">Contramedida previa #${r.contramedidaPrevia.id} (cubría hasta ${fmtDateTime(r.contramedidaPrevia.cubreHasta)})</span>` : ""}
+        <div class="reco-prog">${programacionRecoHtml(r.programacion)}<button type="button" class="btn btn-sm solo-escritura" data-reco-programar="${i}">${r.programacion && ["SIN_FECHA", "PENDIENTE_APROBACION", "RECHAZADA"].includes(r.programacion.estado) ? "Programar manualmente" : "Programar contramedida"}</button></div></td>
+    </tr>`).join("");
+  tbody.querySelectorAll("button[data-reco-programar]").forEach((btn) => {
+    btn.addEventListener("click", () => programarDesdeRecomendacion(state.recomendaciones[Number(btn.dataset.recoProgramar)]));
+  });
+}
+
+function programarDesdeRecomendacion(r) {
+  if (!r) return;
+  resetForm();
+  state.cmRecomendacion = { clave: r.clave, ciclo: r.ciclo, equipo: r.equipo.codigo, categoriaCodigo: r.categoria.codigo, recomendacion: r.recomendacion };
+  populateMaquinaSelect();
+  const selMaq = $("cm-maquina");
+  if (![...selMaq.options].some((o) => o.value === r.equipo.codigo)) selMaq.appendChild(new Option(`${r.equipo.codigo}${r.equipo.nombre ? ` · ${r.equipo.nombre}` : ""}`, r.equipo.codigo));
+  selMaq.value = r.equipo.codigo;
+  onMaquinaChange();
+  const selTipo = $("cm-tipo");
+  if (![...selTipo.options].some((o) => o.value === r.categoria.nombre)) selTipo.appendChild(new Option(r.categoria.nombre, r.categoria.nombre));
+  selTipo.value = r.categoria.nombre;
+  $("form-titulo").textContent = `Programar contramedida · ${r.equipo.codigo} · ${r.categoria.nombre}`;
+  const hint = document.createElement("p");
+  hint.className = "panel-hint";
+  hint.id = "cm-reco-en-captura";
+  hint.textContent = `Recomendación por acumulación: ${fmtNum(r.horasAcumuladas)} h en ${fmtNum(r.paros)} paro(s). Al guardar se registra también en KOIDE MES y la recomendación se da por atendida.`;
+  $("form-contramedida").prepend(hint);
+  $("cm-cancel").hidden = false;
+  $("view-contramedidas").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("cm-responsable").focus();
+}
+
+/* ================================================================
+ * PROGRAMACION AUTOMATICA DE CONTRAMEDIDAS
+ * Deteccion (KOIDE MES) -> busqueda de fecha -> PENDIENTE DE APROBACION ->
+ * un administrador aprueba / reprograma / rechaza. Nada se confirma solo.
+ * ================================================================ */
+
+const CM_PROG_ESTADO = {
+  PENDIENTE_APROBACION: ["Pendiente de aprobación", "warn"],
+  EN_APROBACION: ["Aprobando…", "info"],
+  CONFIRMADA: ["Confirmada", "ok"],
+  RECHAZADA: ["Rechazada", "open"],
+};
+const CM_ORIGEN = { AUTOMATICA: "Automática", MANUAL: "Manual" };
+
+async function cmApi(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const d = await res.json().catch(() => ({}));
+  // 404 de una ruta de este modulo = el servidor en ejecucion es anterior a
+  // estos archivos (se sirven del disco, la API vive en memoria).
+  if (res.status === 404 && d.error === "No encontrado") {
+    throw new Error("El servidor en ejecución no tiene este módulo (arrancó con una versión anterior del código). Reinícialo: npm run stop y después npm start.");
+  }
+  if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+  return d;
+}
+
+function programacionRecoHtml(p) {
+  if (!p) return "";
+  if (p.estado === "SIN_FECHA") return '<span class="reco-prog-aviso">⚠ No se encontró una fecha disponible para programación automática.</span>';
+  if (p.estado === "AUTOMATICA_INACTIVA") return '<span class="muted">Programación automática desactivada.</span>';
+  if (p.estado === "SIN_PROPUESTA") return `<span class="muted">Fecha disponible: ${fmtDate(p.fechaDisponible)} (se propondrá en la siguiente revisión).</span>`;
+  const [txt, cls] = CM_PROG_ESTADO[p.estado] || [p.estado, "info"];
+  const fecha = p.estado === "CONFIRMADA" ? p.fechaConfirmada : p.estado === "PENDIENTE_APROBACION" ? p.fechaPropuesta : null;
+  return `<span class="badge-status ${cls}">${escapeHtml(txt)}</span>${fecha ? ` <span class="muted">${fmtDate(fecha)}</span>` : ""}${p.estado === "RECHAZADA" && p.motivo ? `<br><span class="muted">Motivo: ${escapeHtml(p.motivo)}</span>` : ""}`;
+}
+
+// ejecutar: correr antes la busqueda automatica (idempotente) para que las
+// recomendaciones nuevas lleguen ya con su propuesta.
+async function refrescarProgramacionCm({ ejecutar = false } = {}) {
+  if (ejecutar) {
+    try {
+      await cmApi("POST", "/api/contramedidas/programacion-automatica", {});
+    } catch (err) {
+      console.warn("Programación automática no disponible:", err.message);
+    }
+  }
+  await Promise.all([loadRecomendaciones(), loadPendientesCm(), loadConfirmadasCm()]);
+}
+
+async function loadPendientesCm() {
+  const cont = $("cm-pend-lista");
+  try {
+    state.cmPendientes = await cmApi("GET", "/api/contramedidas/propuestas?estado=PENDIENTE_APROBACION");
+    renderPendientesCm();
+  } catch (err) {
+    $("cm-pend-cuenta").textContent = "no disponible";
+    cont.innerHTML = `<p class="panel-hint">No se pudieron leer las propuestas: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderPendientesCm() {
+  const cont = $("cm-pend-lista");
+  const lista = state.cmPendientes;
+  $("cm-pend-cuenta").textContent = `${lista.length} pendiente(s)`;
+  if (!lista.length) {
+    cont.innerHTML = '<p class="panel-hint">No hay contramedidas esperando aprobación.</p>';
+    return;
+  }
+  cont.innerHTML = lista.map((p) => {
+    const [txt, cls] = CM_PROG_ESTADO[p.estado] || [p.estado, "info"];
+    const ocupada = p.estado !== "PENDIENTE_APROBACION";
+    return `
+    <article class="cm-pend-card" data-prop="${p.id}">
+      <header class="cm-pend-head">
+        <div>
+          <strong class="cm-pend-equipo">${escapeHtml(p.equipo.codigo)}</strong>${p.equipo.nombre ? ` <span class="muted">· ${escapeHtml(p.equipo.nombre)}</span>` : ""}
+        </div>
+        <span class="badge-status ${cls}">${escapeHtml(txt)}</span>
+      </header>
+      <dl class="cm-pend-datos">
+        <div><dt>Falla</dt><dd>${escapeHtml(p.categoria.nombre || p.categoria.codigo || "—")}</dd></div>
+        <div><dt>Acumulado</dt><dd>${p.horasAcumuladas != null ? `${fmtNum(p.horasAcumuladas)} h` : "—"}</dd></div>
+        <div><dt>Fecha propuesta</dt><dd class="cm-pend-fecha">${fmtDate(p.fechaPropuesta)}</dd></div>
+        <div><dt>Origen</dt><dd>Programación automática</dd></div>
+        <div><dt>Recomendación</dt><dd>${fmtDateTime(p.detectadaEn)}</dd></div>
+        ${p.reprogramaciones ? `<div><dt>Reprogramada</dt><dd>${p.reprogramaciones} vez/veces${p.motivo ? ` · ${escapeHtml(p.motivo)}` : ""}</dd></div>` : ""}
+      </dl>
+      ${p.vigente === false ? '<p class="cm-pend-aviso">⚠ Esta recomendación ya fue atendida por otra contramedida. Recházala para cerrar la propuesta.</p>' : ""}
+      <div class="form-actions">
+        <button type="button" class="btn btn-sm btn-ok" data-prop-accion="aprobar" ${ocupada || p.vigente === false ? "disabled" : ""}>Aprobar</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-prop-accion="reprogramar" ${ocupada ? "disabled" : ""}>Reprogramar</button>
+        <button type="button" class="btn btn-sm btn-danger btn-ghost" data-prop-accion="rechazar" ${ocupada ? "disabled" : ""}>Rechazar</button>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+$("cm-pend-lista").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-prop-accion]");
+  if (!btn) return;
+  const id = Number(btn.closest("[data-prop]").dataset.prop);
+  const p = state.cmPendientes.find((x) => x.id === id);
+  if (!p) return;
+  const accion = btn.dataset.propAccion;
+  if (accion === "reprogramar") return abrirReprogramarCm(p);
+  if (accion === "rechazar") return abrirRechazarCm(p);
+  if (!confirm(`¿Aprobar la contramedida de ${p.equipo.codigo} (${p.categoria.nombre || p.categoria.codigo}) para el ${fmtDate(p.fechaPropuesta)}?\n\nSe registrará en KOIDE MES y quedará en el calendario de seguimiento.`)) return;
+  btn.disabled = true;
+  try {
+    await cmApi("POST", `/api/contramedidas/propuestas/${id}/aprobar`, {});
+    await Promise.all([loadContramedidas(), refrescarProgramacionCm()]);
+  } catch (err) {
+    alert("No se pudo aprobar: " + err.message);
+    await loadPendientesCm();
+  }
+});
+
+function cerrarModalCm(id) {
+  $(id).classList.add("hidden-modal");
+  state.cmPropActual = null;
+}
+
+document.querySelectorAll("[data-cerrar-modal]").forEach((b) => b.addEventListener("click", () => cerrarModalCm(b.dataset.cerrarModal)));
+["modal-cm-reprogramar", "modal-cm-rechazar"].forEach((id) => {
+  $(id).addEventListener("click", (e) => { if (e.target.id === id) cerrarModalCm(id); });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  ["modal-cm-reprogramar", "modal-cm-rechazar"].forEach((id) => { if (!$(id).classList.contains("hidden-modal")) cerrarModalCm(id); });
+});
+
+async function abrirReprogramarCm(p) {
+  state.cmPropActual = p;
+  $("cm-rep-ref").textContent = `${p.equipo.codigo} · ${p.categoria.nombre || p.categoria.codigo} · fecha propuesta: ${fmtDate(p.fechaPropuesta)}`;
+  $("cm-rep-motivo").value = "";
+  const sel = $("cm-rep-fecha");
+  sel.innerHTML = '<option value="">Buscando fechas disponibles…</option>';
+  sel.disabled = true;
+  $("cm-rep-guardar").disabled = true;
+  $("modal-cm-reprogramar").classList.remove("hidden-modal");
+  try {
+    const d = await cmApi("GET", `/api/contramedidas/propuestas/${p.id}/fechas-disponibles`);
+    const otras = d.fechas.filter((f) => f !== p.fechaPropuesta);
+    sel.innerHTML = otras.length
+      ? otras.map((f) => `<option value="${f}">${fmtDate(f)} · ${DIAS_SEMANA_CFG[diaSemanaCfg(f) - 1]}</option>`).join("")
+      : '<option value="">No hay otra fecha disponible en el horizonte de programación</option>';
+    sel.disabled = !otras.length;
+    $("cm-rep-guardar").disabled = !otras.length;
+  } catch (err) {
+    sel.innerHTML = `<option value="">${escapeHtml(err.message)}</option>`;
+  }
+}
+
+$("cm-rep-guardar").addEventListener("click", async () => {
+  const p = state.cmPropActual;
+  if (!p) return;
+  const fecha = $("cm-rep-fecha").value;
+  const motivo = $("cm-rep-motivo").value.trim();
+  if (!fecha) return alert("Selecciona una fecha disponible.");
+  if (motivo.length < 3) return alert("Indica el motivo de la reprogramación.");
+  $("cm-rep-guardar").disabled = true;
+  try {
+    await cmApi("POST", `/api/contramedidas/propuestas/${p.id}/reprogramar`, { fecha, motivo });
+    cerrarModalCm("modal-cm-reprogramar");
+    await refrescarProgramacionCm();
+  } catch (err) {
+    alert("No se pudo reprogramar: " + err.message);
+  } finally {
+    $("cm-rep-guardar").disabled = false;
+  }
+});
+
+function abrirRechazarCm(p) {
+  state.cmPropActual = p;
+  $("cm-rech-ref").textContent = `${p.equipo.codigo} · ${p.categoria.nombre || p.categoria.codigo} · ${fmtNum(p.horasAcumuladas || 0)} h · propuesta para el ${fmtDate(p.fechaPropuesta)}`;
+  $("cm-rech-motivo").value = "";
+  $("modal-cm-rechazar").classList.remove("hidden-modal");
+  $("cm-rech-motivo").focus();
+}
+
+$("cm-rech-guardar").addEventListener("click", async () => {
+  const p = state.cmPropActual;
+  if (!p) return;
+  const motivo = $("cm-rech-motivo").value.trim();
+  if (motivo.length < 3) return alert("Indica el motivo del rechazo.");
+  $("cm-rech-guardar").disabled = true;
+  try {
+    await cmApi("POST", `/api/contramedidas/propuestas/${p.id}/rechazar`, { motivo });
+    cerrarModalCm("modal-cm-rechazar");
+    await refrescarProgramacionCm();
+  } catch (err) {
+    alert("No se pudo rechazar: " + err.message);
+  } finally {
+    $("cm-rech-guardar").disabled = false;
+  }
+});
+
+async function loadConfirmadasCm() {
+  const tbody = $("tabla-cm-confirmadas").querySelector("tbody");
+  const estado = $("cm-conf-estado").value;
+  try {
+    const lista = await cmApi("GET", `/api/contramedidas/propuestas?estado=${encodeURIComponent(estado)}`);
+    lista.sort((a, b) => String(b.resueltaEn || "").localeCompare(String(a.resueltaEn || "")));
+    $("cm-conf-cuenta").textContent = `${lista.length} registro(s)`;
+    if (!lista.length) {
+      tbody.innerHTML = `<tr><td colspan="9" class="panel-hint">${estado === "RECHAZADA" ? "No hay propuestas rechazadas." : "Aún no hay contramedidas confirmadas."}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = lista.map((p) => {
+      const [txt, cls] = CM_PROG_ESTADO[p.estado] || [p.estado, "info"];
+      return `<tr>
+        <td><strong>${escapeHtml(p.equipo.codigo)}</strong>${p.equipo.nombre ? `<br><span class="muted">${escapeHtml(p.equipo.nombre)}</span>` : ""}</td>
+        <td>${escapeHtml(p.categoria.nombre || p.categoria.codigo || "—")}</td>
+        <td class="num">${p.horasAcumuladas != null ? `${fmtNum(p.horasAcumuladas)} h` : "—"}</td>
+        <td>${fmtDateTime(p.detectadaEn)}</td>
+        <td>${p.fechaPropuesta ? fmtDate(p.fechaPropuesta) : "—"}</td>
+        <td>${p.fechaConfirmada ? fmtDate(p.fechaConfirmada) : "—"}</td>
+        <td><span class="badge-origen ${p.origen === "AUTOMATICA" ? "auto" : "manual"}">${escapeHtml(CM_ORIGEN[p.origen] || p.origen)}</span></td>
+        <td>${escapeHtml(p.resueltaPor || "—")}<br><span class="muted">${fmtDateTime(p.resueltaEn)}</span></td>
+        <td><span class="badge-status ${cls}">${escapeHtml(txt)}</span>${p.estado === "RECHAZADA" && p.motivo ? `<br><span class="muted">${escapeHtml(p.motivo)}</span>` : ""}</td>
+      </tr>`;
+    }).join("");
+  } catch (err) {
+    $("cm-conf-cuenta").textContent = "no disponible";
+    tbody.innerHTML = `<tr><td colspan="9" class="panel-hint">No se pudieron leer las contramedidas confirmadas: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+$("cm-conf-estado").addEventListener("change", loadConfirmadasCm);
+
+/* ================================================================
+ * CONFIGURACION DEL SISTEMA (solo administradores)
+ * Los parametros y sus limites vienen del servidor (lib/configuracion.js).
+ * ================================================================ */
+
+const DIAS_SEMANA_CFG = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+function diaSemanaCfg(fecha) {
+  const w = new Date(`${fecha}T12:00:00Z`).getUTCDay();
+  return w === 0 ? 7 : w;
+}
+
+function cfgValorTexto(p, texto) {
+  if (texto === null || texto === undefined) return "—";
+  if (p && p.tipo === "booleano") return texto === "1" ? "Activada" : "Desactivada";
+  if (p && p.tipo === "dias_semana") return String(texto).split(",").map((n) => DIAS_SEMANA_CFG[Number(n) - 1] || n).join(", ");
+  return `${texto}${p && p.unidad ? ` ${p.unidad}` : ""}`;
+}
+
+function cfgCampoHtml(p) {
+  const id = `cfg-${p.clave}`;
+  const off = p.disponible === false ? "disabled" : "";
+  let control;
+  if (p.tipo === "booleano") {
+    control = `<label class="cfg-switch"><input type="checkbox" id="${id}" data-cfg="${p.clave}" ${p.valor ? "checked" : ""} ${off} /><span>${p.valor ? "Activada" : "Desactivada"}</span></label>`;
+  } else if (p.tipo === "dias_semana") {
+    control = `<div class="cfg-dias" role="group" aria-labelledby="${id}-lbl">${DIAS_SEMANA_CFG.map((d, i) => `
+      <label class="cfg-dia"><input type="checkbox" data-cfg-dia="${p.clave}" value="${i + 1}" ${(p.valor || []).includes(i + 1) ? "checked" : ""} ${off} /><span>${d}</span></label>`).join("")}</div>`;
+  } else {
+    const step = p.tipo === "entero" ? "1" : "0.01";
+    const v = p.valor === null || p.valor === undefined ? "" : p.tipo === "entero" ? String(p.valor) : Number(p.valor).toFixed(2);
+    control = `<div class="cfg-numero"><input type="number" id="${id}" data-cfg="${p.clave}" value="${v}" min="${p.min}" max="${p.max}" step="${step}" inputmode="decimal" ${off} />${p.unidad ? `<span class="cfg-unidad">${escapeHtml(p.unidad)}</span>` : ""}</div>`;
+  }
+  const meta = p.disponible === false
+    ? `<span class="cfg-aviso">⚠ ${escapeHtml(p.error || "No disponible")}</span>`
+    : `<span class="cfg-meta">${p.fuente === "mes" ? "Se guarda en KOIDE MES" : p.actualizadoPor ? `Última modificación: ${escapeHtml(p.actualizadoPor)} · ${fmtDateTime(p.actualizado)}` : `Valor inicial: ${escapeHtml(cfgValorTexto(p, Array.isArray(p.porDefecto) ? p.porDefecto.join(",") : p.tipo === "booleano" ? (p.porDefecto ? "1" : "0") : String(p.porDefecto)))}`}</span>`;
+  return `
+    <div class="cfg-campo">
+      <div class="cfg-campo-texto">
+        <label ${p.tipo === "dias_semana" ? `id="${id}-lbl"` : `for="${id}"`} class="cfg-etiqueta">${escapeHtml(p.etiqueta)}</label>
+        <p class="cfg-desc">${escapeHtml(p.descripcion)}</p>
+        ${meta}
+      </div>
+      <div class="cfg-control">${control}</div>
+    </div>`;
+}
+
+function cfgLeerFormulario() {
+  const valores = {};
+  for (const p of state.cfg.parametros) {
+    if (p.disponible === false) continue;
+    let v;
+    if (p.tipo === "booleano") v = $(`cfg-${p.clave}`).checked;
+    else if (p.tipo === "dias_semana") v = [...document.querySelectorAll(`input[data-cfg-dia="${p.clave}"]:checked`)].map((x) => Number(x.value));
+    else v = $(`cfg-${p.clave}`).value.trim();
+    const actual = p.tipo === "dias_semana" ? (p.valor || []).join(",") : String(p.valor);
+    const nuevo = p.tipo === "dias_semana" ? v.join(",") : p.tipo === "booleano" ? String(v) : String(Number(v));
+    if (nuevo !== actual) valores[p.clave] = v;
+  }
+  return valores;
+}
+
+async function renderConfiguracion() {
+  const cont = $("cfg-grupos");
+  $("cfg-msg").textContent = "";
+  try {
+    const d = await cmApi("GET", "/api/configuracion");
+    state.cfg.parametros = d.parametros;
+    const grupos = [...new Set(d.parametros.map((p) => p.grupo))];
+    cont.innerHTML = grupos.map((g) => `
+      <fieldset class="cfg-grupo">
+        <legend>${escapeHtml(g)}</legend>
+        ${d.parametros.filter((p) => p.grupo === g).map(cfgCampoHtml).join("")}
+      </fieldset>`).join("");
+    $("cfg-estado").textContent = `${d.parametros.length} parámetros`;
+  } catch (err) {
+    cont.innerHTML = `<p class="panel-hint">No se pudo leer la configuración: ${escapeHtml(err.message)}</p>`;
+  }
+  renderCfgAuditoria();
+}
+
+async function renderCfgAuditoria() {
+  const tbody = $("tabla-cfg-auditoria").querySelector("tbody");
+  try {
+    const filas = await cmApi("GET", "/api/auditoria?entidad=configuracion&limite=50");
+    const porClave = new Map(state.cfg.parametros.map((p) => [p.clave, p]));
+    tbody.innerHTML = filas.length ? filas.map((a) => {
+      const p = porClave.get(a.entidadId);
+      return `<tr>
+        <td>${fmtDateTime(a.en)}</td>
+        <td>${escapeHtml(a.usuario)}</td>
+        <td>${escapeHtml(p ? p.etiqueta : a.entidadId)}</td>
+        <td>${escapeHtml(cfgValorTexto(p, a.anterior))}</td>
+        <td><strong>${escapeHtml(cfgValorTexto(p, a.nuevo))}</strong></td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="5" class="panel-hint">Sin cambios registrados.</td></tr>';
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="panel-hint">No se pudo leer el historial: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+$("cfg-grupos").addEventListener("change", (e) => {
+  const sw = e.target.closest(".cfg-switch input");
+  if (sw) sw.nextElementSibling.textContent = sw.checked ? "Activada" : "Desactivada";
+});
+
+$("form-configuracion").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const valores = cfgLeerFormulario();
+  const msg = $("cfg-msg");
+  msg.className = "cfg-msg";
+  if (!Object.keys(valores).length) {
+    msg.textContent = "No hay cambios que guardar.";
+    return;
+  }
+  const umbral = valores.contramedida_umbral_horas;
+  if (umbral !== undefined && !confirm(`¿Cambiar el umbral para recomendar contramedidas a ${umbral} h?\n\nAfecta las recomendaciones de todos los equipos.`)) return;
+  $("cfg-guardar").disabled = true;
+  try {
+    const d = await cmApi("PUT", "/api/configuracion", { valores });
+    msg.textContent = d.cambios.length ? `Configuración guardada (${d.cambios.length} cambio(s)).` : "Sin cambios.";
+    msg.classList.add("ok");
+    await renderConfiguracion();
+    msg.textContent = d.cambios.length ? `Configuración guardada (${d.cambios.length} cambio(s)).` : "Sin cambios.";
+    msg.classList.add("ok");
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.classList.add("error");
+  } finally {
+    $("cfg-guardar").disabled = false;
+  }
+});
+
+/* ================================================================
+ * HISTORICO DE PAROS (KOIDE MES, cualquier proceso; solo lectura)
+ * ================================================================ */
+
+const HIST_ESTADO = { CERRADO: ["Cerrado", "ok"], ANULADO: ["Anulado", "open"], DECLARADO: ["Esperando mantenimiento", "open"], EN_ATENCION: ["En reparación", "warn"], EN_ESPERA_EXTERNA: ["En espera externa", "warn"], PENDIENTE_CIERRE: ["Atención terminada (histórico)", "info"] };
+const HIST_ROL = { inicio: "inició", continuidad: "continuidad", finalizo: "finalizó" };
+const HIST_EVENTO = { DECLARADO: "Paro declarado", ACEPTADO: "Atención iniciada", CONTINUIDAD: "Toma de continuidad", ESPERA_EXTERNA_INICIO: "Inicio de espera externa", ESPERA_EXTERNA_FIN: "Fin de espera externa", EVIDENCIA_AGREGADA: "Evidencia agregada", FINALIZADO: "Atención finalizada · paro cerrado", CIERRE_VALIDADO: "Código de cierre validado (histórico)", CIERRE_INTENTO_FALLIDO: "Intento de cierre fallido (histórico)", CIERRE_BLOQUEADO: "Cierre bloqueado (histórico)", CIERRE_MIGRADO_090: "Cerrado por migración (fin del doble código)", ANULADO: "Anulado por supervisión", IMPORTADO_LEGACY: "Importado del sistema anterior" };
+
+function histTecnicosHtml(t) {
+  if (!t || !t.length) return "—";
+  return `<ul class="part-list">${t.map((x) => `<li><strong>${escapeHtml(x.nombre || x.numeroEmpleado)}</strong> <span class="muted">${escapeHtml(x.numeroEmpleado)}</span>${x.rolSnapshot ? ` · <span class="rol-tag rol-${x.rolSnapshot === "mantenimiento_admin" ? "admin" : "op"}">${rolTxt(x.rolSnapshot)}</span>` : ""} · ${escapeHtml((x.roles || []).map((r) => HIST_ROL[r] || r).join(", "))}${x.minutosAsignados != null ? ` <span class="part-min">${fmtHM(x.minutosAsignados)}</span>` : ""}</li>`).join("")}</ul>`;
+}
+
+async function loadHistCatalogos() {
+  if (state.hist.catalogos) return state.hist.catalogos;
+  try {
+    const res = await fetch("/api/historico/catalogos");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.hist.catalogos = await res.json();
+  } catch {
+    state.hist.catalogos = { categorias: [], procesos: [], personal: [] };
+  }
+  const c = state.hist.catalogos;
+  const selP = $("hist-proceso");
+  selP.innerHTML = '<option value="">Todos</option>' + (c.procesos || []).map((p) => `<option value="${escapeHtml(p.codigo)}">${escapeHtml(p.nombre || p.codigo)}</option>`).join("");
+  const selC = $("hist-categoria");
+  selC.innerHTML = '<option value="">Todas</option>' + (c.categorias || []).map((x) => `<option value="${escapeHtml(x.codigo)}">${escapeHtml(x.nombre)}</option>`).join("");
+  $("hist-tecnicos").innerHTML = (c.personal || []).map((p) => `<option value="${escapeHtml(p.numeroEmpleado)}">${escapeHtml(p.nombre || "")}</option>`).join("");
+  $("hist-equipos").innerHTML = (state.machines || []).map((m) => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.name || "")}</option>`).join("");
+  return c;
+}
+
+function histFiltros() {
+  return {
+    desde: $("hist-desde").value, hasta: $("hist-hasta").value, proceso: $("hist-proceso").value, equipo: $("hist-equipo").value.trim(),
+    categoria: $("hist-categoria").value, tecnico: $("hist-tecnico").value.trim(), estado: $("hist-estado").value, q: $("hist-q").value.trim(),
+    limite: state.hist.limite, offset: state.hist.offset,
+  };
+}
+
+async function loadHistorico() {
+  const msg = $("hist-msg");
+  msg.hidden = true;
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(histFiltros())) if (v !== "" && v !== null && v !== undefined) q.set(k, v);
+  try {
+    const res = await fetch(`/api/historico/paros?${q}`);
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    state.hist.filas = d.filas || [];
+    state.hist.total = d.total || 0;
+    renderHistorico();
+  } catch (err) {
+    msg.hidden = false;
+    msg.textContent = `No se pudo consultar el histórico en KOIDE MES: ${err.message}`;
+  }
+}
+
+function renderHistorico() {
+  const tbody = $("tabla-historico").querySelector("tbody");
+  const h = state.hist;
+  $("hist-cuenta").textContent = `${fmtNum(h.total)} paros`;
+  $("hist-pagina").textContent = h.total ? `${h.offset + 1}–${Math.min(h.offset + h.filas.length, h.total)} de ${fmtNum(h.total)}` : "—";
+  $("hist-prev").disabled = h.offset <= 0;
+  $("hist-next").disabled = h.offset + h.filas.length >= h.total;
+  if (!h.filas.length) {
+    tbody.innerHTML = '<tr><td colspan="17" class="panel-hint">Sin paros con esos filtros.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = h.filas.map((p, i) => {
+    const [txt, cls] = HIST_ESTADO[p.estado] || [p.estado, "info"];
+    return `<tr data-hist="${i}">
+      <td>${fmtDate(p.fecha)}</td>
+      <td>${escapeHtml(p.turno || "—")}</td>
+      <td>${escapeHtml(p.proceso ? p.proceso.nombre || p.proceso.codigo : "—")}</td>
+      <td>${escapeHtml(p.area || "—")}</td>
+      <td><strong>${escapeHtml(p.equipo.codigo)}</strong>${p.equipo.nombre ? ` · ${escapeHtml(p.equipo.nombre)}` : ""}</td>
+      <td>${escapeHtml(p.linea || "—")}</td>
+      <td>${escapeHtml(p.categoria ? p.categoria.nombre : "—")}</td>
+      <td>${escapeHtml(p.problemaDetectado || p.descripcionOperador || "—")}</td>
+      <td>${histTecnicosHtml(p.tecnicos)}</td>
+      <td>${fmtDateTime(p.inicio)}</td>
+      <td>${p.inicioAtencion ? fmtDateTime(p.inicioAtencion) : "—"}</td>
+      <td>${p.finalizadoEn ? fmtDateTime(p.finalizadoEn) : p.fin ? fmtDateTime(p.fin) : "—"}</td>
+      <td class="num">${p.tiempoTotalMin != null ? fmtHours(p.tiempoTotalMin) : "—"}</td>
+      <td class="num">${p.esperaExternaMin ? `${fmtNum(p.esperaExternaMin)} min` : "—"}</td>
+      <td><span class="badge-status ${cls}">${escapeHtml(txt)}</span></td>
+      <td class="num">${fmtNum((p.evidencias || []).length)}</td>
+      <td><button type="button" class="btn btn-sm btn-ghost" data-hist-ver="${p.id}">Ver</button></td>
+    </tr>`;
+  }).join("");
+  tbody.querySelectorAll("button[data-hist-ver]").forEach((btn) => btn.addEventListener("click", () => verHistorico(btn.dataset.histVer)));
+}
+
+async function verHistorico(id) {
+  try {
+    const res = await fetch(`/api/historico/paros/${encodeURIComponent(id)}`);
+    const p = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(p.error || `HTTP ${res.status}`);
+    const [txt] = HIST_ESTADO[p.estado] || [p.estado];
+    $("hist-det-titulo").textContent = `Paro #${p.id} · ${p.equipo.codigo}${p.equipo.nombre ? ` · ${p.equipo.nombre}` : ""} · ${txt}`;
+    const pares = [
+      ["Proceso", p.proceso ? p.proceso.nombre || p.proceso.codigo : "—"], ["Área", p.area || "—"], ["Ubicación", p.ubicacion || "—"],
+      ["Línea MES", p.linea || "sin línea MES"], ["Terminal de origen", p.terminal ? `${p.terminal.uid}${p.terminal.posicion ? ` · posición ${p.terminal.posicion}` : ""}${p.terminal.tipo ? ` · ${p.terminal.tipo}` : ""}` : "—"],
+      ["Fecha / turno", `${fmtDate(p.fecha)}${p.turno ? ` · ${p.turno}` : ""}${p.grupo ? ` · grupo ${p.grupo}` : ""}`],
+      ["Código de atención", p.codigoAtencion || "—"], ["Reportó", p.reportadoPor ? `${p.reportadoPor.nombre || ""} ${p.reportadoPor.numeroEmpleado ? `#${p.reportadoPor.numeroEmpleado}` : ""}`.trim() : "—"],
+      ["Nota del operador", p.descripcionOperador || "—"], ["Categoría de falla", p.categoria ? p.categoria.nombre : "—"],
+      ["Problema detectado", p.problemaDetectado || "—"], ["Trabajo realizado", p.accionRealizada || "—"], ["Comentarios", p.comentarios || "—"],
+      ["Inicio del paro", fmtDateTime(p.inicio)], ["Inicio de atención", p.inicioAtencion ? fmtDateTime(p.inicioAtencion) : "—"],
+      ["Finalización", p.finalizadoEn ? fmtDateTime(p.finalizadoEn) : "—"], ["Cierre", p.cierre ? `${fmtDateTime(p.cierre.en)} · ${p.cierre.modo === "finalizacion" ? "por mantenimiento al finalizar" : p.cierre.modo === "codigo" ? "con código (histórico)" : p.cierre.modo === "supervisor" ? "anulado por supervisión" : p.cierre.modo}` : "—"],
+      ["Tiempo total", p.tiempoTotalMin != null ? fmtHours(p.tiempoTotalMin) : "—"], ["Respuesta", p.respuestaMin != null ? `${fmtNum(p.respuestaMin)} min` : "—"],
+      ["Reparación (sin espera externa)", p.reparacionMin != null ? `${fmtNum(p.reparacionMin)} min` : "—"], ["Espera externa", p.esperaExternaMin ? `${fmtNum(p.esperaExternaMin)} min${p.esperaExterna && p.esperaExterna.nota ? ` · ${p.esperaExterna.nota}` : ""}` : "—"],
+      ["Estado", txt], ["Motivo de anulación", p.cierre && p.cierre.anuladoMotivo ? p.cierre.anuladoMotivo : "—"],
+    ];
+    $("hist-det-datos").innerHTML = pares.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd>`).join("");
+    $("hist-det-tecnicos").innerHTML = (p.tecnicos || []).length ? histTecnicosHtml(p.tecnicos).replace(/^<ul class="part-list">|<\/ul>$/g, "") : "<li>—</li>";
+    $("hist-det-evidencias").innerHTML = (p.evidencias || []).length ? p.evidencias.map((e) => `<figure><a href="${e.url}" target="_blank" rel="noopener"><img src="${e.url}" alt="${escapeHtml(e.tipo)}" loading="lazy" /></a><figcaption>${escapeHtml(e.tipo)}${e.etapa ? ` · ${escapeHtml(e.etapa)}` : ""}${e.descripcion ? ` · ${escapeHtml(e.descripcion)}` : ""}<br>${e.subidoPor ? `#${escapeHtml(e.subidoPor.numeroEmpleado || "?")}${e.subidoPor.usuario ? ` (${escapeHtml(e.subidoPor.usuario)})` : ""} · ` : ""}${e.creado ? fmtDateTime(e.creado) : ""}</figcaption></figure>`).join("") : '<span class="muted">Sin evidencias.</span>';
+    $("hist-det-eventos").querySelector("tbody").innerHTML = (p.eventos || []).map((e) => `<tr><td>${fmtDateTime(e.creado)}</td><td>${escapeHtml(HIST_EVENTO[e.evento] || e.evento)}</td><td class="mono">${escapeHtml(e.actor || e.actorTipo || "—")}</td><td class="mono">${escapeHtml(e.detalle ? JSON.stringify(e.detalle) : "")}</td></tr>`).join("") || '<tr><td colspan="4">—</td></tr>';
+    $("hist-detalle").hidden = false;
+    $("hist-detalle").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    alert(`No se pudo abrir el paro: ${err.message}`);
+  }
+}
+
+async function renderHistoricoView() {
+  await loadHistCatalogos();
+  if (!$("hist-desde").value && !$("hist-hasta").value && !state.hist.filas.length) {
+    const hoy = today();
+    $("hist-hasta").value = hoy;
+    $("hist-desde").value = isoDate(new Date(Date.now() - 30 * 86400000));
+  }
+  await loadHistorico();
+}
+
+$("hist-buscar").addEventListener("click", () => { state.hist.offset = 0; loadHistorico(); });
+$("hist-limpiar").addEventListener("click", () => {
+  for (const id of ["hist-desde", "hist-hasta", "hist-equipo", "hist-tecnico", "hist-q"]) $(id).value = "";
+  $("hist-proceso").value = ""; $("hist-categoria").value = ""; $("hist-estado").value = "terminados";
+  state.hist.offset = 0;
+  loadHistorico();
+});
+$("hist-prev").addEventListener("click", () => { state.hist.offset = Math.max(0, state.hist.offset - state.hist.limite); loadHistorico(); });
+$("hist-next").addEventListener("click", () => { state.hist.offset += state.hist.limite; loadHistorico(); });
+$("hist-det-cerrar").addEventListener("click", () => { $("hist-detalle").hidden = true; });
+["hist-equipo", "hist-tecnico", "hist-q"].forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("hist-buscar").click(); } }));

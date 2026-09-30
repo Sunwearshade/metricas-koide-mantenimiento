@@ -16,8 +16,9 @@
 // si el MES no responde, no se asigna.
 //   node scripts/usuarios.js activar <username>
 //
-// Roles: mantenimiento_admin | mantenimiento_op
-// La contrasena (administrador) o el PIN (operador, 4 digitos) se piden de forma
+// Roles: mantenimiento_admin | mantenimiento_op | tecnico_consulta (solo lectura:
+//        desempeno, tiempo muerto, MTTR/MTBF e historico; sin numero de empleado)
+// La contrasena (administrador / consulta) o el PIN (operador, 4 digitos) se piden de forma
 // oculta (o se toman de USUARIO_PASSWORD para automatizar). Nunca se pasan como
 // argumento de la linea de comandos. Los operadores tambien se administran desde
 // el dashboard (Operadores de mantenimiento).
@@ -67,6 +68,7 @@ async function main() {
       if (!username || !rol || !nombre) throw new Error('Uso: crear <username> <rol> "<nombre>" [numero_empleado]');
       if (!auth.ROLES_VALIDOS.has(rol)) throw new Error(`Rol invalido. Use: ${[...auth.ROLES_VALIDOS].join(" | ")}`);
       if (await auth.findUserByUsername(username)) throw new Error(`Ya existe el usuario ${username}`);
+      if (numeroEmpleado && rol === auth.ROLES.CONSULTA) throw new Error("tecnico_consulta no lleva numero de empleado (no atiende paros)");
       if (numeroEmpleado) await tecnicoDelMes(numeroEmpleado);
       const esOp = rol === auth.ROLES.OP;
       const secreto = await pedirPassword(esOp ? "PIN (4 digitos): " : undefined);
