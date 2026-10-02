@@ -6,7 +6,8 @@
 //   node scripts/seed-dev.js
 //
 // Contrasenas de desarrollo documentadas en MIGRACION-MYSQL.md; se pueden
-// cambiar con SEED_ADMIN_PASSWORD / SEED_OP_PASSWORD.
+// cambiar con SEED_ADMIN_PASSWORD. El operador de desarrollo solo con
+// SEED_OP_NUMERO + SEED_OP_PIN (usar mejor Operadores de mantenimiento).
 
 const { loadEnvFile, env } = require("../lib/env");
 
@@ -17,8 +18,12 @@ const auth = require("../lib/auth");
 
 const USUARIOS = [
   { username: "admin", nombre: "Administrador de Mantenimiento (dev)", rol: auth.ROLES.ADMIN, password: env("SEED_ADMIN_PASSWORD", "admin-dev-2026") },
-  { username: "operador", nombre: "Operador de Mantenimiento (dev)", rol: auth.ROLES.OP, password: env("SEED_OP_PASSWORD", "operador-dev-2026") },
 ];
+// Un operador necesita un empleado del catalogo de KOIDE MES y un PIN de 4
+// digitos: solo se siembra si se indican (SEED_OP_NUMERO / SEED_OP_PIN).
+if (env("SEED_OP_NUMERO", "") && env("SEED_OP_PIN", "")) {
+  USUARIOS.push({ username: "operador", nombre: "Operador de Mantenimiento (dev)", rol: auth.ROLES.OP, pin: env("SEED_OP_PIN", ""), numeroEmpleado: env("SEED_OP_NUMERO", "") });
+}
 
 (async () => {
   if (env("NODE_ENV", "") === "production") throw new Error("seed-dev no se ejecuta con NODE_ENV=production");

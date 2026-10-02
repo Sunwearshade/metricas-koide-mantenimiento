@@ -167,7 +167,11 @@ function mesParticipa(numero, evento) {
   x.rolSnapshot = mesRolActual; x.tipoActor = tipoActor;
   if (evento !== "FINALIZA_ATENCION") mesParo.responsableActual = numero;
 }
-const PERSONAL_MES = ["1382", "2000", "3000", "7777", "7778"].map((n) => ({ numeroEmpleado: n, nombre: `TECNICO ${n}` }));
+const PERSONAL_MES = ["1382", "2000", "3000", "7777", "7778", "4001", "4002", "4003"].map((n) => ({ numeroEmpleado: n, nombre: `TECNICO ${n}` }));
+// Catalogo completo del MES (/personal): activos + inactivos. mesPersonalBaja
+// simula que el MES da de baja a un empleado despues de asociarlo.
+const PERSONAL_MES_INACTIVO = [{ numeroEmpleado: "8888", nombre: "TECNICO BAJA" }];
+const mesPersonalBaja = new Set();
 const mesFotos = new Map();
 // Contramedidas por acumulacion (MES mig 090): recomendaciones y registro.
 let mesRecomendaciones = [{ clave: "M1|falla_hidraulica", equipo: { id: 1, codigo: "M1", nombre: "MAQ-1", proceso: "CORTE", idMaquina: null, area: null, ubicacion: null },
@@ -208,6 +212,9 @@ function startKoide() {
         if (r.startsWith("/compat/downtime-records")) return send(200, mesRecords);
         if (r === "/compat/machines") return send(200, MACHINES);
         if (r === "/equipos") return send(200, { procesos: [{ codigo: "CORTE", migradoMes: true }, { codigo: "CNC", migradoMes: false }], equipos: [] });
+        if (r === "/personal") {
+          return send(200, { personal: [...PERSONAL_MES.map((p) => ({ ...p, activo: !mesPersonalBaja.has(p.numeroEmpleado), origen: "mes" })), ...PERSONAL_MES_INACTIVO.map((p) => ({ ...p, activo: false, origen: "mes" }))] });
+        }
         if (r === "/catalogos") return send(200, { categorias: [{ codigo: "sensor", nombre: "Sensor" }, { codigo: "falla_mecanica", nombre: "Falla mecánica" }], personal: PERSONAL_MES, procesos: [{ codigo: "CORTE", nombre: "Corte" }, { codigo: "CNC", nombre: "CNC" }] });
         // Historico general (mig 090): cualquier paro terminado; filtros basicos.
         if (r.startsWith("/historico")) {
@@ -1271,7 +1278,7 @@ test("operadores: alta por el administrador (usuario + PIN + numero del MES), PI
   assert.equal((await alta({ pin: "12345" })).status, 400);
   assert.equal((await alta({ pin: "1111" })).status, 400, "PIN trivial");
   assert.equal((await alta({ pin: "1234" })).status, 400, "PIN en secuencia");
-  assert.equal((await alta({ numeroEmpleado: "1382" })).status, 400, "numero ya usado por otro operador");
+  assert.equal((await alta({ numeroEmpleado: "1382" })).status, 409, "numero ya usado por otro operador");
   r = await alta({});
   assert.equal(r.status, 201, JSON.stringify(r.data));
   assert.equal(r.data.numeroEmpleado, "7777");
@@ -1332,6 +1339,148 @@ test("operadores: alta por el administrador (usuario + PIN + numero del MES), PI
   // Cambio de numero: tambien validado contra el MES.
   assert.equal((await api("PATCH", "/api/admin/operadores/roberto", { numeroEmpleado: "9999" })).status, 400);
   assert.equal((await api("PATCH", "/api/admin/operadores/roberto", { activo: true })).data.activo, true);
+});
+
+test("operadores: cuenta <-> empleado del MES: alta, rechazos, listado persistente, login y atencion", async () => {
+  // Selector: catalogo COMPLETO del MES (activo/inactivo) + cuenta que ya tiene cada numero.
+  let r = await api("GET", "/api/admin/personal-mes");
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.completo, true);
+  const cat = new Map(r.data.personal.map((p) => [p.numeroEmpleado, p]));
+  assert.equal(cat.get("8888").activo, false, "el inactivo se ve (deshabilitado en el formulario)");
+  assert.equal(cat.get("1382").asignadoA, "op_prueba");
+  assert.equal(cat.get("4001").asignadoA, null);
+  assert.equal((await api("GET", "/api/admin/personal-mes", null, "op")).status, 403);
+
+  const alta = (b) => api("POST", "/api/admin/operadores", { rol: "mantenimiento_op", nombre: "", username: "juan.perez", pin: "5937", numeroEmpleado: "4001", ...b });
+  // Asociaciones invalidas: no se crea nada.
+  r = await alta({ numeroEmpleado: "9999" });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /no existe en el catalogo/);
+  r = await alta({ numeroEmpleado: "8888" });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /INACTIVO/);
+  r = await alta({ numeroEmpleado: "1382" });
+  assert.equal(r.status, 409);
+  assert.match(r.data.error, /op_prueba/);
+  assert.equal((await alta({ numeroEmpleado: "" })).status, 400, "operador sin empleado");
+  for (const rol of ["operador_produccion", "supervisor", "admin", "capturista"]) {
+    r = await alta({ rol });
+    assert.equal(r.status, 400, `rol ${rol}`);
+    assert.match(r.data.error, /Rol no valido/);
+  }
+  assert.equal((await alta({ username: "op_prueba" })).status, 409, "usuario duplicado");
+  assert.equal((await alta({ pin: "1234" })).status, 400, "PIN trivial");
+  assert.equal(Number((await dbq("SELECT COUNT(*) n FROM usuarios WHERE username = 'juan.perez'"))[0].n), 0, "ningun rechazo deja una cuenta a medias");
+
+  // Alta valida: sin nombre escrito, toma el del MES.
+  r = await alta({});
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.deepEqual([r.data.rol, r.data.numeroEmpleado, r.data.nombre, r.data.activo], ["mantenimiento_op", "4001", "TECNICO 4001", true]);
+  assert.ok(r.data.creado && !Number.isNaN(Date.parse(r.data.creado)), "fecha de creacion");
+  assert.equal((await api("GET", "/api/admin/personal-mes")).data.personal.find((p) => p.numeroEmpleado === "4001").asignadoA, "juan.perez");
+
+  // Listado: persistente y con el estado del vinculo en el MES.
+  const cuenta = async (u) => (await api("GET", "/api/admin/operadores")).data.operadores.find((o) => o.username === u);
+  let l = await api("GET", "/api/admin/operadores");
+  assert.equal(l.data.mes.disponible, true);
+  let j = await cuenta("juan.perez");
+  assert.deepEqual([j.empleado.estado, j.empleado.nombre, j.atiendeParos], ["ACTIVO", "TECNICO 4001", true]);
+  await stopApp();
+  await startApp();
+  j = await cuenta("juan.perez");
+  assert.ok(j && j.numeroEmpleado === "4001", "sigue en el listado tras reiniciar el servidor");
+
+  // Login con usuario + PIN y atencion completa (el MES recibe su numero y rol).
+  assert.equal((await login("juan.perez", "6048")).status, 401, "PIN incorrecto");
+  const lj = await login("juan.perez", "5937");
+  assert.equal(lj.status, 200, JSON.stringify(lj.data));
+  assert.equal(lj.data.redirect, "/operador-mantenimiento");
+  assert.equal(lj.data.user.numeroEmpleado, "4001");
+  const juan = { headers: { Cookie: lj.cookie } };
+  const paroPrevio = mesParo;
+  try {
+    mesParo = MES_PARO();
+    r = await api("GET", "/api/operador/reportes/482913", null, juan);
+    assert.equal(r.data.puedeAceptar, true, JSON.stringify(r.data));
+    r = await api("POST", "/api/operador/reportes/482913/aceptar", null, juan);
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const acc = mesLlamadas.filter((c) => c.url.endsWith("/aceptar")).pop();
+    assert.deepEqual([acc.actor, acc.rol], ["4001", "mantenimiento_op"]);
+    const id = r.data.id;
+    r = await api("POST", `/api/operador/atenciones/${id}/continuidad`, null, "op");
+    assert.equal(r.status, 200, "otro tecnico toma continuidad");
+    r = await api("POST", `/api/operador/atenciones/${id}/finalizar`, { categoria: "sensor", problemaDetectado: "p", actionTaken: "t", fotos: [{ tipo: "despues", name: "d.png", base64: PNG.toString("base64") }] }, juan);
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.estado, "CERRADO");
+    assert.equal(mesLlamadas.filter((c) => c.url.endsWith("/finalizar")).pop().actor, "4001");
+    assert.deepEqual(r.data.participantes.map((x) => `${x.numeroEmpleado}:${x.tipoActor}:${x.minutosAsignados}`), ["4001:operador:60", "1382:operador:60"]);
+  } finally {
+    mesParo = paroPrevio;
+  }
+  assert.ok((await api("GET", "/api/data")).data.technicians.some((t) => String(t.employee_number) === "4001"), "roster / estadisticas");
+
+  // Administrador desde el mismo formulario: contrasena, con o sin empleado.
+  r = await api("POST", "/api/admin/operadores", { rol: "mantenimiento_admin", nombre: "Ana", username: "ana.admin", password: "ana-admin-2026", numeroEmpleado: "4002" });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.deepEqual([r.data.rol, r.data.numeroEmpleado], ["mantenimiento_admin", "4002"]);
+  assert.equal((await login("ana.admin", "ana-admin-2026")).data.user.numeroEmpleado, "4002");
+  r = await api("POST", "/api/admin/operadores", { rol: "mantenimiento_admin", nombre: "Sin numero", username: "admin.sinnum", password: "admin-sin-2026" });
+  assert.equal(r.status, 201);
+  assert.equal(r.data.numeroEmpleado, null);
+  assert.equal((await api("POST", "/api/admin/operadores", { rol: "mantenimiento_admin", nombre: "x", username: "admin.corta", password: "corta" })).status, 400, "contrasena < 8");
+  assert.equal((await api("PATCH", "/api/admin/operadores/ana.admin", { pin: "5937" })).status, 400, "al admin no se le pone PIN");
+  assert.equal((await api("PATCH", "/api/admin/operadores/juan.perez", { password: "larga-2026" })).status, 400, "al operador no se le pone contrasena");
+  r = await api("PATCH", "/api/admin/operadores/ana.admin", { activo: false });
+  assert.equal(r.status, 200, "otro admin puede desactivarla");
+  assert.equal((await login("ana.admin", "ana-admin-2026")).status, 401);
+  assert.equal((await api("PATCH", `/api/admin/operadores/${USUARIOS.admin.username}`, { activo: false })).status, 400, "no se desactiva a si mismo");
+  await api("PATCH", "/api/admin/operadores/ana.admin", { activo: true });
+
+  // Desactivar / reactivar el operador.
+  r = await api("PATCH", "/api/admin/operadores/juan.perez", { activo: false });
+  assert.equal(r.data.activo, false);
+  assert.equal((await api("GET", "/api/auth/me", null, juan)).status, 401, "sus sesiones se cierran");
+  assert.equal((await login("juan.perez", "5937")).status, 401, "desactivado no entra");
+  assert.equal((await cuenta("juan.perez")).atiendeParos, false);
+  assert.equal((await api("PATCH", "/api/admin/operadores/juan.perez", { activo: true })).data.activo, true);
+
+  // Cambiar el empleado asociado: validado; la historia del MES no se toca.
+  assert.equal((await api("PATCH", "/api/admin/operadores/juan.perez", { numeroEmpleado: "8888" })).status, 400, "inactivo");
+  assert.equal((await api("PATCH", "/api/admin/operadores/juan.perez", { numeroEmpleado: "4002" })).status, 409, "de otra cuenta");
+  assert.equal((await api("PATCH", "/api/admin/operadores/juan.perez", { numeroEmpleado: "" })).status, 400, "operador sin empleado");
+  r = await api("PATCH", "/api/admin/operadores/juan.perez", { numeroEmpleado: "4003", nombre: "Juan Pérez" });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual([r.data.numeroEmpleado, r.data.nombre], ["4003", "Juan Pérez"]);
+  const cat2 = new Map((await api("GET", "/api/admin/personal-mes")).data.personal.map((p) => [p.numeroEmpleado, p]));
+  assert.deepEqual([cat2.get("4001").asignadoA, cat2.get("4003").asignadoA], [null, "juan.perez"], "el numero anterior queda libre");
+  const aud = await dbq("SELECT accion, valor_anterior, valor_nuevo FROM auditoria WHERE entidad = 'usuario' AND entidad_id = 'juan.perez' ORDER BY id");
+  assert.equal(aud[0].accion, "alta_cuenta");
+  const cambio = aud.find((a) => /"4003"/.test(a.valor_nuevo || ""));
+  assert.ok(cambio && /"4001"/.test(cambio.valor_anterior), "auditoria con numero anterior y nuevo");
+  assert.ok(aud.every((a) => !/5937/.test(`${a.valor_anterior}${a.valor_nuevo}`)), "sin PIN en la auditoria");
+
+  // El MES da de baja al empleado despues: el listado lo avisa antes de que el tecnico lo sufra.
+  mesPersonalBaja.add("4003");
+  try {
+    j = await cuenta("juan.perez");
+    assert.deepEqual([j.empleado.estado, j.atiendeParos], ["INACTIVO", false]);
+  } finally {
+    mesPersonalBaja.delete("4003");
+  }
+
+  // Unicidad garantizada por la base (mig 008), no solo por la aplicacion.
+  await assert.rejects(dbq("UPDATE usuarios SET numero_empleado = '4002' WHERE username = 'juan.perez'"), /Duplicate/);
+
+  // Operador sin empleado (estado invalido heredado, solo editando la base): no entra y el listado lo marca.
+  await dbq("UPDATE usuarios SET numero_empleado = NULL WHERE username = 'juan.perez'");
+  r = await login("juan.perez", "5937");
+  assert.equal(r.status, 403);
+  assert.match(r.data.error, /no esta asociada a un empleado/);
+  assert.equal((await login("juan.perez", "0000")).status, 401, "con PIN incorrecto no se revela nada");
+  j = await cuenta("juan.perez");
+  assert.deepEqual([j.empleado.estado, j.atiendeParos], ["SIN_NUMERO", false]);
+  await dbq("UPDATE usuarios SET numero_empleado = '4003', intentos_fallidos = 0, bloqueado_hasta = NULL WHERE username = 'juan.perez'");
 });
 
 test("autorizacion: el backend valida el rol (401/403)", async () => {
@@ -1626,9 +1775,9 @@ test("admin participante: un mantenimiento_admin con numero atiende paros sin de
   let r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "9999" });
   assert.equal(r.status, 400, "numero inexistente en el MES");
   r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "7778" });
-  assert.equal(r.status, 400, "numero ya usado por otro usuario");
+  assert.equal(r.status, 409, "numero ya usado por otro usuario");
   r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "3000" });
-  assert.equal(r.status, 400, "3000 lo tiene admin_tec");
+  assert.equal(r.status, 409, "3000 lo tiene admin_tec");
   await dbq("UPDATE usuarios SET numero_empleado = NULL WHERE username = 'admin_tec'");
   r = await api("PATCH", "/api/admin/operadores/admin_jona", { numeroEmpleado: "3000" });
   assert.equal(r.status, 200, JSON.stringify(r.data));
@@ -1704,6 +1853,13 @@ test("sin KOIDE MES disponible: el operador recibe un error claro y el dashboard
     assert.ok(d.data.count > 0, "sigue sirviendo la ultima copia");
     const h = await api("GET", "/api/health", null, null);
     assert.ok(h.data.lastError);
+    // Operadores: el listado sale de ESTA base (vinculo DESCONOCIDO); el alta no se hace sin validar.
+    const l = await api("GET", "/api/admin/operadores");
+    assert.equal(l.status, 200);
+    assert.equal(l.data.mes.disponible, false);
+    assert.ok(l.data.operadores.find((o) => o.username === USUARIOS.op.username).empleado.estado === "DESCONOCIDO");
+    const a = await api("POST", "/api/admin/operadores", { rol: "mantenimiento_op", nombre: "x", username: "sin.mes", pin: "5937", numeroEmpleado: "4001" });
+    assert.equal(a.status, 503);
   } finally {
     await stopApp();
     appEnv = prev;

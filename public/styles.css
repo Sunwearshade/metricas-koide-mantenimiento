@@ -2220,7 +2220,7 @@ code {
 
 /* Personal de mantenimiento */
 .mono { font-family: var(--font-mono); }
-.op-acciones { white-space: nowrap; display: flex; gap: 6px; flex-wrap: wrap; }
+.op-acciones { white-space: nowrap; display: flex; gap: 6px; flex-wrap: nowrap; }
 #opa-msg.error { color: var(--danger); }
 #btn-atender { text-decoration: none; }
 

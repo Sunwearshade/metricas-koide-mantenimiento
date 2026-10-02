@@ -46,7 +46,7 @@
       <button class="menu-item" data-view="documentos" type="button">Documentos</button>
       <button class="menu-item" data-view="gastos" type="button">Control de gastos</button>
       <button class="menu-item" data-view="entregas" type="button">Tiempos de entrega</button>
-      <button class="menu-item" data-view="operadores" type="button">Personal de mantenimiento</button>
+      <button class="menu-item" data-view="operadores" type="button">Operadores de mantenimiento</button>
       <button class="menu-item" data-view="configuracion" type="button">Configuración del sistema</button>
       <div class="menu-foot" id="menu-sesion"></div>
     </aside>
@@ -1317,28 +1317,33 @@
       <div class="view" id="view-operadores" hidden>
         <section class="panel">
           <div class="panel-head">
-            <h2>Personal de mantenimiento</h2>
+            <h2>Operadores de mantenimiento</h2>
             <span class="badge badge-muted" id="op-admin-cuenta">—</span>
+            <button class="btn" id="opa-nuevo" type="button">Nuevo operador</button>
           </div>
           <p class="panel-hint">
-            Los operadores entran a la pantalla de atención con <strong>usuario + PIN de 4 dígitos</strong>.
-            El número de empleado es su identidad ante KOIDE MES: debe existir y estar activo en el catálogo de
-            personal de mantenimiento del MES. El PIN se guarda cifrado; tras 5 intentos fallidos la cuenta se
-            bloquea 15 minutos y tras 10, hasta que se restablezca el PIN aquí.
+            Cada cuenta de este sistema (usuario + PIN o contraseña) se <strong>asocia a un empleado del catálogo de
+            personal de mantenimiento de KOIDE MES</strong>: con ese número el MES registra quién participó en cada paro.
+            Solo se puede elegir un empleado que exista, esté activo y no tenga ya otra cuenta. El nombre y el estado del
+            empleado los mantiene el MES. El PIN se guarda cifrado; tras 5 intentos fallidos la cuenta se bloquea 15 minutos
+            y tras 10, hasta que se restablezca el PIN aquí.
           </p>
-          <form id="form-operador" class="form">
+          <p class="panel-hint error" id="opa-mes-aviso" role="alert" hidden></p>
+          <form id="form-operador" class="form" hidden>
+            <h3 id="opa-titulo">Nueva cuenta</h3>
             <div class="form-grid">
               <div class="filter-group">
-                <label for="opa-rol">Tipo de cuenta</label>
+                <label for="opa-rol">Rol</label>
                 <select id="opa-rol">
-                  <option value="mantenimiento_op">Operador de mantenimiento (atiende paros, usuario + PIN)</option>
-                  <option value="tecnico_consulta">Técnico de consulta (solo lectura, contraseña)</option>
+                  <option value="mantenimiento_op">Operador de mantenimiento (atiende paros · usuario + PIN)</option>
+                  <option value="mantenimiento_admin">Administrador de mantenimiento (contraseña · con empleado también atiende paros)</option>
+                  <option value="tecnico_consulta">Consulta (solo lectura · contraseña · sin empleado)</option>
                 </select>
               </div>
-              <div class="filter-group" id="opa-numero-grupo">
-                <label for="opa-numero">Número de empleado (KOIDE MES)</label>
-                <input id="opa-numero" list="opa-personal" autocomplete="off" required />
-                <datalist id="opa-personal"></datalist>
+              <div class="filter-group" id="opa-empleado-grupo">
+                <label for="opa-empleado">Empleado de mantenimiento (KOIDE MES)</label>
+                <input id="opa-buscar" type="search" placeholder="Buscar por número o nombre" autocomplete="off" aria-label="Buscar empleado" />
+                <select id="opa-empleado"></select>
               </div>
               <div class="filter-group">
                 <label for="opa-nombre">Nombre</label>
@@ -1349,28 +1354,35 @@
                 <input id="opa-usuario" maxlength="60" autocomplete="off" autocapitalize="none" spellcheck="false" required />
               </div>
               <div class="filter-group" id="opa-pin-grupo">
-                <label for="opa-pin">PIN (4 dígitos)</label>
-                <input id="opa-pin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password" required />
+                <label for="opa-pin" id="opa-pin-label">PIN (4 dígitos)</label>
+                <input id="opa-pin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password" />
               </div>
               <div class="filter-group" id="opa-password-grupo" hidden>
-                <label for="opa-password">Contraseña (mín. 8)</label>
+                <label for="opa-password" id="opa-password-label">Contraseña (mín. 8)</label>
                 <input id="opa-password" type="password" minlength="8" autocomplete="new-password" />
               </div>
             </div>
-            <button class="btn" id="opa-guardar" type="submit">Dar de alta</button>
-            <p class="panel-hint" id="opa-msg" role="status"></p>
+            <p class="panel-hint" id="opa-historia" hidden>
+              Cambiar el empleado no modifica los paros ya atendidos: el MES conserva en cada participación el número,
+              el usuario y el rol de ese momento. Desde ahora la cuenta actuará con el nuevo número.
+            </p>
+            <div class="form-actions">
+              <button class="btn" id="opa-guardar" type="submit">Dar de alta</button>
+              <button class="btn btn-ghost" id="opa-cancelar" type="button">Cancelar</button>
+            </div>
           </form>
-          <div class="table-wrap">
+          <p class="panel-hint" id="opa-msg" role="status"></p>
+          <div class="table-wrap table-wrap-full">
             <table class="table" id="tabla-operadores">
               <thead>
                 <tr>
                   <th>Nombre</th>
                   <th>Usuario</th>
-                  <th>Número</th>
+                  <th>Empleado (KOIDE MES)</th>
                   <th>Rol</th>
                   <th>Estado</th>
                   <th>Acceso</th>
-                  <th>PIN actualizado</th>
+                  <th>Creado</th>
                   <th>Acciones</th>
                 </tr>
               </thead>

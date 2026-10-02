@@ -1110,30 +1110,33 @@ async function rosterTecnicos() {
   return base;
 }
 
+// Auditoria de cuentas: sin secretos (PIN/contrasena solo como "cambiado").
+function resumenCuenta(o) {
+  return o ? { username: o.username, nombre: o.nombre, rol: o.rol, numeroEmpleado: o.numeroEmpleado, activo: o.activo } : null;
+}
+
 async function handleOperadoresAdmin(req, res, url, user) {
   try {
-    if (url === "/api/admin/operadores" && req.method === "GET") return sendJson(res, 200, { operadores: await operadores.listar() }), true;
-    if (url === "/api/admin/personal-mes" && req.method === "GET") {
-      const c = await koideGeneral.catalogos();
-      return sendJson(res, 200, { personal: c.personal || [] }), true;
-    }
+    if (url === "/api/admin/operadores" && req.method === "GET") return sendJson(res, 200, await operadores.listarConMes()), true;
+    // Empleados del catalogo de KOIDE MES para asociar a una cuenta (con la
+    // cuenta que ya tiene cada numero). No se guarda copia aqui.
+    if (url === "/api/admin/personal-mes" && req.method === "GET") return sendJson(res, 200, await operadores.personalParaAsociar()), true;
     if (url === "/api/admin/operadores" && req.method === "POST") {
       const b = await readBody(req, 10e3);
-      if (b.rol === CONSULTA) {
-        const o = await operadores.altaConsulta({ nombre: b.nombre, username: b.username, password: b.password });
-        log(`[admin] ${user.username} dio de alta al usuario de consulta ${o.username}`);
-        return sendJson(res, 201, o), true;
-      }
-      const o = await operadores.alta({ nombre: b.nombre, username: b.username, pin: b.pin, numeroEmpleado: b.numeroEmpleado, activo: b.activo });
-      log(`[admin] ${user.username} dio de alta al operador ${o.username} (#${o.numeroEmpleado})`);
+      const o = await operadores.alta({ rol: b.rol || undefined, nombre: b.nombre, username: b.username, pin: b.pin, password: b.password, numeroEmpleado: b.numeroEmpleado, activo: b.activo });
+      log(`[admin] ${user.username} dio de alta la cuenta ${o.username} (${o.rol}${o.numeroEmpleado ? ` #${o.numeroEmpleado}` : ""})`);
+      await auditoria.registrar({ user, accion: "alta_cuenta", entidad: "usuario", entidadId: o.username, nuevo: resumenCuenta(o) });
       return sendJson(res, 201, o), true;
     }
     const m = url.match(/^\/api\/admin\/operadores\/([A-Za-z0-9._-]{3,60})$/);
     if (m && req.method === "PATCH") {
       const b = await readBody(req, 10e3);
-      const o = await operadores.modificar(m[1], { nombre: b.nombre, numeroEmpleado: b.numeroEmpleado, activo: b.activo, pin: b.pin });
-      const que = Object.keys(b).filter((k) => ["nombre", "numeroEmpleado", "activo", "pin"].includes(k)).join(", ");
-      log(`[admin] ${user.username} modifico al operador ${o.username}: ${que}`);
+      const antes = await operadores.obtener(m[1]);
+      const o = await operadores.modificar(m[1], { nombre: b.nombre, numeroEmpleado: b.numeroEmpleado, activo: b.activo, pin: b.pin, password: b.password }, user);
+      const que = Object.keys(b).filter((k) => ["nombre", "numeroEmpleado", "activo", "pin", "password"].includes(k)).join(", ");
+      log(`[admin] ${user.username} modifico la cuenta ${o.username}: ${que}`);
+      await auditoria.registrar({ user, accion: "modificar_cuenta", entidad: "usuario", entidadId: o.username, anterior: resumenCuenta(antes), nuevo: resumenCuenta(o),
+        detalle: { campos: que, secretoCambiado: Boolean(b.pin || b.password) } });
       return sendJson(res, 200, o), true;
     }
   } catch (err) {

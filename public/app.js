@@ -4364,7 +4364,7 @@ setInterval(() => {
 }, 2 * 60 * 60 * 1000);
 
 
-/* ---------------- Operadores de mantenimiento (usuario + PIN) ---------------- */
+/* ---------------- Operadores de mantenimiento (cuenta <-> empleado del MES) ---------------- */
 
 async function adminApi(method, url, body) {
   const res = await fetch(url, {
@@ -4384,76 +4384,172 @@ function opMsg(texto, esError) {
   el.classList.toggle("error", Boolean(esError));
 }
 
+const ROL_CUENTA_TXT = { mantenimiento_op: "Operador", mantenimiento_admin: "Administrador", tecnico_consulta: "Consulta · solo lectura" };
+const VINCULO_TXT = {
+  ACTIVO: ["ok", "Activo en MES"],
+  INACTIVO: ["open", "Inactivo en MES · no atiende"],
+  NO_EXISTE: ["open", "No existe en MES · no atiende"],
+  SIN_NUMERO: ["warn", "Sin empleado asociado"],
+  DESCONOCIDO: ["info", "MES sin respuesta"],
+};
+
+// Estado de la vista: cuentas, catalogo del MES y cuenta en edicion (null = alta).
+const opa = { cuentas: [], personal: [], editando: null };
+
+function etiquetaEmpleado(p) {
+  return `${p.numeroEmpleado} — ${p.nombre || "(sin nombre en el MES)"}`;
+}
+
+// Opciones del selector: solo se pueden ELEGIR empleados activos y libres (o el
+// que ya tiene la cuenta en edicion); los demas se muestran deshabilitados con
+// el motivo, para que se entienda por que no estan disponibles.
+function llenarEmpleados() {
+  const sel = $("opa-empleado");
+  const q = $("opa-buscar").value.trim().toLowerCase();
+  const propio = opa.editando ? opa.editando.numeroEmpleado : null;
+  const actual = sel.value;
+  const esAdmin = (opa.editando ? opa.editando.rol : $("opa-rol").value) === "mantenimiento_admin";
+  const lista = opa.personal
+    .filter((p) => !q || String(p.numeroEmpleado).toLowerCase().includes(q) || String(p.nombre || "").toLowerCase().includes(q))
+    .sort((a, b) => Number(Boolean(a.asignadoA && a.numeroEmpleado !== propio)) - Number(Boolean(b.asignadoA && b.numeroEmpleado !== propio)) || String(a.nombre || "~").localeCompare(String(b.nombre || "~")) || String(a.numeroEmpleado).localeCompare(String(b.numeroEmpleado)));
+  const opciones = [`<option value="">${esAdmin ? "— Sin empleado (no atiende paros) —" : "— Elige un empleado —"}</option>`];
+  for (const p of lista) {
+    const ocupado = p.asignadoA && p.numeroEmpleado !== propio;
+    const motivo = !p.activo ? " · INACTIVO en MES" : ocupado ? ` · ya es de ${p.asignadoA}` : p.numeroEmpleado === propio ? " · actual" : "";
+    opciones.push(`<option value="${escapeHtml(p.numeroEmpleado)}"${!p.activo || ocupado ? " disabled" : ""}>${escapeHtml(etiquetaEmpleado(p) + motivo)}</option>`);
+  }
+  if (propio && !opa.personal.some((p) => p.numeroEmpleado === propio)) {
+    opciones.push(`<option value="${escapeHtml(propio)}" disabled>${escapeHtml(`${propio} — NO EXISTE en el MES (elige otro)`)}</option>`);
+  }
+  sel.innerHTML = opciones.join("");
+  if ([...sel.options].some((o) => o.value === actual && !o.disabled)) sel.value = actual;
+}
+
+async function cargarPersonalMes() {
+  try {
+    const r = await adminApi("GET", "/api/admin/personal-mes");
+    opa.personal = r.personal || [];
+  } catch (err) {
+    opa.personal = [];
+    $("opa-mes-aviso").textContent = `No se pudo leer el catálogo de personal de KOIDE MES (${err.message}). Sin él no se puede asociar un empleado.`;
+    $("opa-mes-aviso").hidden = false;
+  }
+  llenarEmpleados();
+}
+
 async function renderOperadores() {
   try {
-    const [{ operadores }, { personal }] = await Promise.all([
-      adminApi("GET", "/api/admin/operadores"),
-      adminApi("GET", "/api/admin/personal-mes").catch(() => ({ personal: [] })),
-    ]);
-    $("opa-personal").innerHTML = (personal || [])
-      .map((p) => `<option value="${escapeHtml(p.numeroEmpleado)}">${escapeHtml(p.nombre || "")}</option>`).join("");
-    $("opa-numero").dataset.personal = JSON.stringify(personal || []);
-    $("op-admin-cuenta").textContent = `${operadores.filter((o) => o.rol === "mantenimiento_op").length} operadores · ${operadores.filter((o) => o.rol === "mantenimiento_admin" && o.numeroEmpleado).length} administradores que atienden paros · ${operadores.filter((o) => o.rol === "tecnico_consulta").length} de consulta`;
+    const r = await adminApi("GET", "/api/admin/operadores");
+    opa.cuentas = r.operadores || [];
+    const aviso = $("opa-mes-aviso");
+    aviso.hidden = r.mes.disponible;
+    if (!r.mes.disponible) aviso.textContent = `KOIDE MES no responde: no se puede verificar el empleado de cada cuenta ni dar de alta (${r.mes.error || "sin detalle"}).`;
+    const cs = opa.cuentas;
+    $("op-admin-cuenta").textContent = `${cs.filter((o) => o.rol === "mantenimiento_op").length} operadores · ${cs.filter((o) => o.rol === "mantenimiento_admin").length} administradores · ${cs.filter((o) => o.rol === "tecnico_consulta").length} de consulta · ${cs.filter((o) => o.atiendeParos).length} pueden atender paros`;
     const tbody = $("tabla-operadores").querySelector("tbody");
-    tbody.innerHTML = operadores.length ? operadores.map((o) => `
+    tbody.innerHTML = cs.length ? cs.map((o) => {
+      const [cls, txt] = VINCULO_TXT[o.empleado.estado] || ["", ""];
+      const empleado = o.rol === "tecnico_consulta" ? "—"
+        : `${o.numeroEmpleado ? `<span class="mono">${escapeHtml(o.numeroEmpleado)}</span>${o.empleado.nombre ? ` · ${escapeHtml(o.empleado.nombre)}` : ""}<br>` : ""}<span class="badge-status ${cls}">${escapeHtml(txt)}</span>`;
+      const acceso = o.rol !== "mantenimiento_op" ? "Contraseña" : o.bloqueoDefinitivo ? '<span class="badge-status open">Bloqueado: restablecer PIN</span>' : o.bloqueado ? '<span class="badge-status warn">Bloqueado 15 min</span>' : o.intentosFallidos ? `${o.intentosFallidos} intento(s) fallido(s)` : "PIN OK";
+      return `
       <tr data-usuario="${escapeHtml(o.username)}">
         <td>${escapeHtml(o.nombre)}</td>
         <td class="mono">${escapeHtml(o.username)}</td>
-        <td class="mono">${escapeHtml(o.numeroEmpleado || "—")}</td>
-        <td>${o.rol === "mantenimiento_admin" ? `Administrador${o.numeroEmpleado ? " · atiende paros" : " · sin número"}` : o.rol === "tecnico_consulta" ? "Consulta · solo lectura" : "Operador"}</td>
+        <td>${empleado}</td>
+        <td>${escapeHtml(ROL_CUENTA_TXT[o.rol] || o.rol)}${o.atiendeParos ? " · atiende paros" : ""}</td>
         <td><span class="badge-status ${o.activo ? "ok" : "open"}">${o.activo ? "Activo" : "Inactivo"}</span></td>
-        <td>${o.rol !== "mantenimiento_op" ? "Contraseña" : o.bloqueoDefinitivo ? '<span class="badge-status open">Bloqueado: restablecer PIN</span>' : o.bloqueado ? '<span class="badge-status warn">Bloqueado 15 min</span>' : o.intentosFallidos ? `${o.intentosFallidos} intento(s) fallido(s)` : "PIN OK"}</td>
-        <td>${o.pinActualizado ? fmtDateTime(o.pinActualizado) : "—"}</td>
-        <td class="op-acciones">
-          ${o.rol !== "mantenimiento_op" ? "" : '<button class="btn btn-small" data-accion="pin" type="button">Restablecer PIN</button>'}
-          ${o.rol === "tecnico_consulta" ? "" : `<button class="btn btn-small" data-accion="numero" type="button">${o.numeroEmpleado ? "Cambiar número" : "Asignar número"}</button>`}
-          ${o.rol === "mantenimiento_admin" ? "" : `<button class="btn btn-small" data-accion="activo" type="button">${o.activo ? "Desactivar" : "Activar"}</button>`}
-        </td>
-      </tr>`).join("") : '<tr><td colspan="8" class="panel-hint">Sin personal. Da de alta el primer operador con el formulario.</td></tr>';
+        <td>${acceso}</td>
+        <td>${o.creado ? fmtDateTime(o.creado) : "—"}</td>
+        <td><div class="op-acciones">
+          <button class="btn btn-small" data-accion="editar" type="button">Editar</button>
+          <button class="btn btn-small" data-accion="secreto" type="button">${o.rol === "mantenimiento_op" ? "Restablecer PIN" : "Cambiar contraseña"}</button>
+          <button class="btn btn-small" data-accion="activo" type="button">${o.activo ? "Desactivar" : "Activar"}</button>
+        </div></td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="8" class="panel-hint">Sin cuentas. Pulsa "Nuevo operador".</td></tr>';
   } catch (err) {
     opMsg(err.message, true);
   }
 }
 
-$("opa-numero").addEventListener("change", () => {
-  const lista = JSON.parse($("opa-numero").dataset.personal || "[]");
-  const p = lista.find((x) => String(x.numeroEmpleado) === $("opa-numero").value.trim());
-  if (p && !$("opa-nombre").value.trim()) $("opa-nombre").value = p.nombre || "";
-});
-
+// Campos segun el rol (alta) o la cuenta (edicion).
 function opaAplicarRol() {
-  const consulta = $("opa-rol").value === "tecnico_consulta";
-  $("opa-numero-grupo").hidden = consulta;
-  $("opa-pin-grupo").hidden = consulta;
-  $("opa-password-grupo").hidden = !consulta;
-  $("opa-numero").required = !consulta;
-  $("opa-pin").required = !consulta;
-  $("opa-password").required = consulta;
+  const rol = opa.editando ? opa.editando.rol : $("opa-rol").value;
+  const consulta = rol === "tecnico_consulta";
+  const op = rol === "mantenimiento_op";
+  $("opa-empleado-grupo").hidden = consulta;
+  $("opa-empleado").required = op;
+  $("opa-pin-grupo").hidden = !op;
+  $("opa-password-grupo").hidden = op;
+  $("opa-pin").required = op && !opa.editando;
+  $("opa-password").required = !op && !opa.editando;
+  const opcional = opa.editando ? " — vacío = sin cambio" : "";
+  $("opa-pin-label").textContent = `PIN (4 dígitos)${opcional}`;
+  $("opa-password-label").textContent = `Contraseña (mín. 8)${opcional}`;
+  llenarEmpleados();
 }
+
+function abrirFormulario(cuenta) {
+  opa.editando = cuenta || null;
+  const f = $("form-operador");
+  f.reset();
+  $("opa-buscar").value = "";
+  $("opa-titulo").textContent = cuenta ? `Editar ${cuenta.username}` : "Nueva cuenta";
+  $("opa-guardar").textContent = cuenta ? "Guardar cambios" : "Dar de alta";
+  $("opa-rol").disabled = Boolean(cuenta);
+  $("opa-usuario").disabled = Boolean(cuenta);
+  if (cuenta) {
+    $("opa-rol").value = cuenta.rol;
+    $("opa-usuario").value = cuenta.username;
+    $("opa-nombre").value = cuenta.nombre;
+  }
+  opaAplicarRol();
+  if (cuenta && cuenta.numeroEmpleado) $("opa-empleado").value = cuenta.numeroEmpleado;
+  $("opa-historia").hidden = !(cuenta && cuenta.numeroEmpleado);
+  f.hidden = false;
+  opMsg("");
+  (cuenta ? $("opa-nombre") : $("opa-rol")).focus();
+  cargarPersonalMes().then(() => { if (cuenta && cuenta.numeroEmpleado) $("opa-empleado").value = cuenta.numeroEmpleado; });
+}
+
+function cerrarFormulario() {
+  $("form-operador").hidden = true;
+  opa.editando = null;
+}
+
+$("opa-nuevo").addEventListener("click", () => abrirFormulario(null));
+$("opa-cancelar").addEventListener("click", cerrarFormulario);
 $("opa-rol").addEventListener("change", opaAplicarRol);
-opaAplicarRol();
+$("opa-buscar").addEventListener("input", llenarEmpleados);
+$("opa-empleado").addEventListener("change", () => {
+  const p = opa.personal.find((x) => x.numeroEmpleado === $("opa-empleado").value);
+  if (p && p.nombre && (!$("opa-nombre").value.trim() || !opa.editando)) $("opa-nombre").value = p.nombre;
+});
 
 $("form-operador").addEventListener("submit", async (e) => {
   e.preventDefault();
   opMsg("");
   $("opa-guardar").disabled = true;
   try {
-    const consulta = $("opa-rol").value === "tecnico_consulta";
-    const o = await adminApi("POST", "/api/admin/operadores", consulta ? {
-      rol: "tecnico_consulta",
-      nombre: $("opa-nombre").value.trim(),
-      username: $("opa-usuario").value.trim(),
-      password: $("opa-password").value,
-    } : {
-      numeroEmpleado: $("opa-numero").value.trim(),
-      nombre: $("opa-nombre").value.trim(),
-      username: $("opa-usuario").value.trim(),
-      pin: $("opa-pin").value,
-    });
-    $("form-operador").reset();
-    opaAplicarRol();
-    opMsg(consulta ? `Usuario de consulta ${o.username} dado de alta (solo lectura).` : `Operador ${o.username} (#${o.numeroEmpleado}) dado de alta.`);
-    renderOperadores();
+    const cuenta = opa.editando;
+    const rol = cuenta ? cuenta.rol : $("opa-rol").value;
+    const secreto = rol === "mantenimiento_op" ? { pin: $("opa-pin").value } : { password: $("opa-password").value };
+    if (!cuenta) {
+      const body = { rol, nombre: $("opa-nombre").value.trim(), username: $("opa-usuario").value.trim(), ...secreto };
+      if (rol !== "tecnico_consulta") body.numeroEmpleado = $("opa-empleado").value;
+      const o = await adminApi("POST", "/api/admin/operadores", body);
+      cerrarFormulario();
+      opMsg(`Cuenta ${o.username} (${ROL_CUENTA_TXT[o.rol]}${o.numeroEmpleado ? ` · empleado #${o.numeroEmpleado}` : ""}) dada de alta.`);
+    } else {
+      const body = { nombre: $("opa-nombre").value.trim() };
+      if (rol !== "tecnico_consulta" && $("opa-empleado").value !== (cuenta.numeroEmpleado || "")) body.numeroEmpleado = $("opa-empleado").value;
+      if (Object.values(secreto)[0]) Object.assign(body, secreto);
+      const o = await adminApi("PATCH", `/api/admin/operadores/${encodeURIComponent(cuenta.username)}`, body);
+      cerrarFormulario();
+      opMsg(`Cuenta ${o.username} actualizada${"numeroEmpleado" in body ? ` (empleado ${o.numeroEmpleado ? `#${o.numeroEmpleado}` : "quitado"})` : ""}.`);
+    }
+    await renderOperadores();
   } catch (err) {
     opMsg(err.message, true);
   } finally {
@@ -4464,25 +4560,25 @@ $("form-operador").addEventListener("submit", async (e) => {
 $("tabla-operadores").addEventListener("click", async (e) => {
   const btn = e.target.closest("button[data-accion]");
   if (!btn) return;
-  const usuario = btn.closest("tr").dataset.usuario;
+  const cuenta = opa.cuentas.find((o) => o.username === btn.closest("tr").dataset.usuario);
+  if (!cuenta) return;
   const accion = btn.dataset.accion;
-  let body = null;
-  if (accion === "pin") {
-    const pin = prompt(`Nuevo PIN de 4 dígitos para ${usuario}:`);
-    if (pin == null) return;
-    body = { pin };
-  } else if (accion === "numero") {
-    const n = prompt(`Número de empleado para ${usuario} (debe existir y estar activo en KOIDE MES; vacío lo quita a un administrador):`);
-    if (n == null) return;
-    body = { numeroEmpleado: n.trim() };
+  if (accion === "editar") return abrirFormulario(cuenta);
+  let body;
+  if (accion === "secreto") {
+    const esOp = cuenta.rol === "mantenimiento_op";
+    const v = prompt(esOp ? `Nuevo PIN de 4 dígitos para ${cuenta.username}:` : `Nueva contraseña (mín. 8) para ${cuenta.username}:`);
+    if (v == null || v === "") return;
+    body = esOp ? { pin: v } : { password: v };
   } else {
-    body = { activo: btn.textContent.trim() === "Activar" };
+    if (cuenta.activo && !confirm(`¿Desactivar la cuenta ${cuenta.username}? Sus sesiones abiertas se cierran.`)) return;
+    body = { activo: !cuenta.activo };
   }
   opMsg("");
   try {
-    await adminApi("PATCH", `/api/admin/operadores/${encodeURIComponent(usuario)}`, body);
-    opMsg(accion === "pin" ? `PIN de ${usuario} restablecido; bloqueos liberados.` : `Operador ${usuario} actualizado.`);
-    renderOperadores();
+    await adminApi("PATCH", `/api/admin/operadores/${encodeURIComponent(cuenta.username)}`, body);
+    opMsg(accion === "secreto" ? `${cuenta.rol === "mantenimiento_op" ? "PIN" : "Contraseña"} de ${cuenta.username} actualizado; bloqueos liberados y sesiones cerradas.` : `Cuenta ${cuenta.username} ${body.activo ? "activada" : "desactivada"}.`);
+    await renderOperadores();
   } catch (err) {
     opMsg(err.message, true);
   }
