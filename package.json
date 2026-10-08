@@ -17,6 +17,7 @@
     "seed:dev": "node scripts/seed-dev.js",
     "usuarios": "node scripts/usuarios.js",
     "koide:sim": "node scripts/koide-sim.js",
+    "preventivo:importar": "node scripts/importar-preventivo.js",
     "test": "node --test --test-reporter=spec tests/integration.test.js"
   },
   "dependencies": {

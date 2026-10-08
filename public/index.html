@@ -43,6 +43,7 @@
       <button class="menu-item" data-view="historico" type="button">Histórico de paros</button>
       <button class="menu-item" data-view="bonos" type="button">Bonos semanales</button>
       <button class="menu-item" data-view="calendarios" type="button">Calendarios de mantenimiento</button>
+      <button class="menu-item" data-view="preventivo" type="button">Programa preventivo</button>
       <button class="menu-item" data-view="documentos" type="button">Documentos</button>
       <button class="menu-item" data-view="gastos" type="button">Control de gastos</button>
       <button class="menu-item" data-view="entregas" type="button">Tiempos de entrega</button>
@@ -612,6 +613,61 @@
         </div>
       </div>
 
+      <!-- Modal máquina del programa preventivo -->
+      <div class="modal-overlay hidden-modal" id="pv-modal" role="dialog" aria-modal="true" aria-labelledby="pv-modal-titulo">
+        <div class="modal-panel">
+          <div class="panel-head">
+            <h2 id="pv-modal-titulo">Máquina</h2>
+            <button type="button" class="btn-close" id="pv-modal-close" aria-label="Cerrar">&times;</button>
+          </div>
+          <p class="panel-hint" id="pv-modal-periodo">—</p>
+          <div id="pv-modal-falla"></div>
+          <div class="pv-modal-estado" id="pv-modal-estado"></div>
+          <div class="pv-modal-reporte" id="pv-modal-reporte"></div>
+          <div class="form-actions">
+            <button type="button" class="btn" id="pv-modal-cerrar">Cerrar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal reporte de mantenimiento preventivo -->
+      <div class="modal-overlay hidden-modal" id="pv-reporte-modal" role="dialog" aria-modal="true" aria-labelledby="pv-reporte-titulo">
+        <div class="modal-panel">
+          <div class="panel-head">
+            <h2 id="pv-reporte-titulo">Reporte de mantenimiento</h2>
+            <button type="button" class="btn-close" id="pv-reporte-close" aria-label="Cerrar">&times;</button>
+          </div>
+          <p class="panel-hint" id="pv-reporte-fecha">—</p>
+          <div class="filter-group form-full">
+            <label for="pv-reporte-responsable">Responsable</label>
+            <input type="text" id="pv-reporte-responsable" maxlength="255" list="pv-tecnicos" placeholder="Nombre del técnico responsable" />
+            <datalist id="pv-tecnicos"></datalist>
+          </div>
+          <div class="filter-group form-full">
+            <label>Puntos a revisar durante el mantenimiento</label>
+            <div id="pv-reporte-puntos"></div>
+            <div class="pv-rep-add">
+              <input type="text" id="pv-reporte-nuevo-punto" maxlength="255" placeholder="Agregar punto a revisar..." />
+              <button type="button" class="btn btn-ghost" id="pv-reporte-agregar-punto">Agregar</button>
+            </div>
+          </div>
+          <div class="filter-group form-full">
+            <label for="pv-reporte-archivo">Evidencia de lo realizado</label>
+            <div id="pv-reporte-evidencias"></div>
+            <input type="file" id="pv-reporte-archivo" accept="image/jpeg,image/png,application/pdf" multiple />
+          </div>
+          <div class="filter-group form-full">
+            <label for="pv-reporte-observaciones">Observaciones</label>
+            <textarea id="pv-reporte-observaciones" rows="3" maxlength="5000" placeholder="Describa las acciones realizadas..."></textarea>
+          </div>
+          <p class="panel-hint" id="pv-reporte-autor" hidden></p>
+          <div class="form-actions">
+            <button type="button" class="btn" id="pv-reporte-guardar">Guardar reporte</button>
+            <button type="button" class="btn btn-ghost" id="pv-reporte-cancelar">Cancelar</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= DESEMPEÑO DE TÉCNICOS ================= -->
       <div class="view" id="view-tecnicos" hidden>
         <section class="kpis" aria-label="Indicadores técnicos">
@@ -885,6 +941,51 @@
           <div class="bono-scroll">
             <div id="cal-grid" class="bono-doc"></div>
           </div>
+        </section>
+      </div>
+
+      <!-- ================= PROGRAMA PREVENTIVO MENSUAL ================= -->
+      <div class="view" id="view-preventivo" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Programa de mantenimiento preventivo</h2>
+            <span class="badge badge-muted" id="pv-estado">—</span>
+          </div>
+          <div class="filter-bar">
+            <div class="filter-group">
+              <label for="pv-select">Mes</label>
+              <select id="pv-select"></select>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-ghost" id="pv-anterior">Mes anterior</button>
+              <button type="button" class="btn btn-ghost" id="pv-siguiente">Mes siguiente</button>
+              <button type="button" class="btn" id="pv-nuevo">+ Nuevo mes</button>
+              <button type="button" class="btn btn-danger btn-ghost" id="pv-eliminar">Eliminar mes</button>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn" id="pv-programar">Regenerar programación lun-sáb</button>
+              <button type="button" class="btn btn-ghost" id="pv-limpiar">Limpiar agenda</button>
+            </div>
+          </div>
+          <p class="panel-hint">
+            La programación se genera sola al iniciar cada mes: un preventivo por máquina en días de
+            lunes a sábado, primero las máquinas con más tiempo muerto el mes anterior. Si el mes
+            anterior no tiene paros, el mes queda vacío. Regenerar o limpiar solo se permite en un mes
+            sin tareas marcadas ni reportes. Haz clic en la ficha de una máquina para ver su falla más
+            común, marcarla (Realizado · Reprogramado · Pendiente) y agregar el reporte de
+            mantenimiento con los puntos a revisar y la evidencia de lo realizado.
+          </p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 id="pv-mes-titulo">—</h2>
+            <span class="badge badge-muted">clic en la máquina para ver detalle</span>
+          </div>
+          <div class="pv-month-wrap">
+            <div id="pv-grid"></div>
+          </div>
+          <div class="pv-legend" id="pv-leyenda"></div>
         </section>
       </div>
 

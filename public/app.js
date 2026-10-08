@@ -2653,6 +2653,9 @@ function switchView(name) {
   if (name === "calendarios") {
     renderCalView();
   }
+  if (name === "preventivo") {
+    recargarPreventivo();
+  }
   if (name === "contramedidas") {
     populateMaquinaSelect();
     populateResponsables();
@@ -2688,6 +2691,7 @@ function rerenderActual() {
   if (name === "tiempo") renderChartsTipos(aggregateByMachine(applyFilters()));
   if (name === "bonos") renderBonosView();
   if (name === "calendarios") renderCalView();
+  if (name === "preventivo") renderPvView();
   if (name === "contramedidas") {
     populateMaquinaSelect();
     populateResponsables();
@@ -2708,6 +2712,7 @@ async function autoRefreshTodo() {
     loadContramedidas(),
     loadBonos(),
     loadCalendarios(),
+    loadPreventivo(),
     loadDocumentos(),
     fetch("/api/gastos/refresh", { method: "POST" }).catch(() => null),
     fetch("/api/entregas/refresh", { method: "POST" }).catch(() => null),
@@ -4347,6 +4352,615 @@ document.addEventListener("click", (e) => {
   borrarDocumento(btn.dataset.cat, btn.dataset.name);
 });
 
+/* ---------------- Programa de mantenimiento preventivo mensual ----------------
+ * Traido del sistema "metricos" (08/10/2026). El servidor programa cada mes
+ * (lib/preventivo.js); aqui se muestra el calendario, el estado de cada
+ * maquina y el reporte del mantenimiento (puntos revisados y evidencias). */
+
+const PV_ESTADOS = ["Realizado", "Reprogramado", "Pendiente"];
+const PV_WEEKDAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const PV_MES_NOMBRES = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+];
+const PV_MAX_EVIDENCIAS = 6;
+
+const PV_CHECKLIST = {
+  Biselado: [
+    "Verificar alineación y desgaste de los cabezales",
+    "Revisar avance y velocidad de alimentación",
+    "Comprobar tensión y estado de bandas",
+    "Revisar sistema neumático (fugas y presión)",
+    "Lubricar puntos de engrase",
+    "Verificar señales y estado de sensores",
+    "Revisar sistema de enfriamiento",
+    "Inspeccionar mangueras y conexiones",
+    "Limpiar acumulación de viruta y residuos",
+  ],
+  Cortadoras: [
+    "Revisar condición del disco o cuchilla",
+    "Verificar alineación de guías y mesa",
+    "Comprobar carrera y retorno del cabezal",
+    "Revisar sistema de lubricación/refrigeración",
+    "Verificar botones de emergencia y guardas",
+    "Revisar sensores de corte y finales de carrera",
+    "Lubricar puntos de engrase",
+    "Inspeccionar cables y conexiones eléctricas",
+    "Limpiar residuos de corte",
+  ],
+  "CNC's": [
+    "Verificar precisión y juego de ejes",
+    "Revisar nivel y estado de aceite hidráulico",
+    "Comprobar correcto posicionamiento de herramientas",
+    "Revisar panel de control y alarmas activas",
+    "Verificar sistema de refrigerante",
+    "Lubricar guías y husillos",
+    "Revisar mangueras y conexiones",
+    "Verificar estado de sensores",
+    "Limpiar zona de trabajo",
+  ],
+  Prensas: [
+    "Verificar presión del sistema hidráulico",
+    "Revisar estado de sellos y cilindros",
+    "Comprobar freno y embrague",
+    "Revisar alineación de la matriz",
+    "Verificar guardas y botones de emergencia",
+    "Revisar nivel y calidad de aceite",
+    "Lubricar puntos de engrase",
+    "Inspeccionar conexiones y mangueras",
+    "Limpiar zona de trabajo",
+  ],
+};
+
+const pv = { list: [], activeId: null, hoyKey: "", modal: null, borrador: null };
+
+function pvColors() {
+  return (state.calCfg && state.calCfg.colores) || { Realizado: "#16a34a", Reprogramado: "#f59e0b", Pendiente: "#94a3b8" };
+}
+
+function pvHoyKey() {
+  const h = new Date();
+  return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}-${String(h.getDate()).padStart(2, "0")}`;
+}
+
+function pvActivo() {
+  return pv.list.find((c) => c.id === pv.activeId) || null;
+}
+
+function pvTarea(key, idx) {
+  const cal = pvActivo();
+  return (cal && cal.dias && cal.dias[key] && cal.dias[key][Number(idx)]) || null;
+}
+
+function pvMesAnterior(mes) {
+  const [y, m] = mes.split("-").map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function pvRowsMesAnterior(mes) {
+  const prev = pvMesAnterior(mes);
+  return (state.records || []).filter((r) => String(r.record_date || "").slice(0, 7) === prev);
+}
+
+function pvFallasPorMaquina(rows) {
+  const m = new Map();
+  for (const r of rows) {
+    const c = String(r.machine_code || "").trim();
+    if (!c) continue;
+    const cat = String(r.downtime_category || "").trim() || "Sin categoría";
+    if (!m.has(c)) m.set(c, new Map());
+    const cats = m.get(c);
+    if (!cats.has(cat)) cats.set(cat, { n: 0, min: 0 });
+    const e = cats.get(cat);
+    e.n += 1;
+    if (r.downtime_minutes != null && !isNaN(r.downtime_minutes)) e.min += Number(r.downtime_minutes);
+  }
+  const out = new Map();
+  for (const [c, cats] of m) {
+    out.set(
+      c,
+      [...cats.entries()].map(([cat, e]) => ({ cat, n: e.n, min: e.min })).sort((a, b) => b.n - a.n || b.min - a.min)
+    );
+  }
+  return out;
+}
+
+function pvReporteExiste(t) {
+  const r = t && t.reporte;
+  if (!r) return false;
+  return Boolean(
+    r.responsable ||
+      r.observaciones ||
+      (Array.isArray(r.evidencias) && r.evidencias.length) ||
+      (Array.isArray(r.puntos) && r.puntos.some((p) => p && p.ok))
+  );
+}
+
+async function pvFetch(url, opts = {}) {
+  const res = await fetch(url, {
+    ...opts,
+    headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function loadPreventivo() {
+  try {
+    const data = await pvFetch("/api/preventivo");
+    pv.list = Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error("Error al cargar el programa preventivo:", err);
+  }
+}
+
+async function recargarPreventivo() {
+  await loadPreventivo();
+  renderPvView();
+  if (pv.modal) {
+    if (pvTarea(pv.modal.key, pv.modal.idx)) abrirPvModal(pv.modal.key, pv.modal.idx);
+    else cerrarPvModal();
+  }
+}
+
+/* --- Calendario --- */
+
+function renderPvLegend() {
+  const colors = pvColors();
+  $("pv-leyenda").innerHTML =
+    PV_ESTADOS.map(
+      (e) => `<span class="pv-legend-item"><span class="pv-dot" style="background:${escapeHtml(colors[e])}"></span> ${e}</span>`
+    ).join("") +
+    '<span class="pv-legend-item"><span class="pv-dot pv-dot-hoy"></span> Hoy</span>' +
+    '<span class="pv-legend-item"><i class="pv-tarea-rep"></i> Con reporte</span>';
+}
+
+function renderPvGrid() {
+  const cal = pvActivo();
+  const el = $("pv-grid");
+  if (!cal) {
+    el.innerHTML = "";
+    return;
+  }
+  const [y, m] = cal.mes.split("-").map(Number);
+  const diasMes = new Date(y, m, 0).getDate();
+  const offset = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+  const hoyKey = pvHoyKey();
+  pv.hoyKey = hoyKey;
+  const dias = cal.dias || {};
+  const mapFallas = pvFallasPorMaquina(pvRowsMesAnterior(cal.mes));
+
+  let html = '<div class="pv-row pv-head">';
+  for (const d of PV_WEEKDAYS) html += `<div class="pv-cell pv-head-cell">${d}</div>`;
+  html += "</div>";
+  const semanas = Math.ceil((offset + diasMes) / 7);
+  let dia = 1;
+  for (let w = 0; w < semanas; w++) {
+    html += '<div class="pv-row">';
+    for (let d = 0; d < 7; d++) {
+      if (w * 7 + d < offset || dia > diasMes) {
+        html += '<div class="pv-cell pv-empty"></div>';
+        continue;
+      }
+      const key = `${cal.mes}-${String(dia).padStart(2, "0")}`;
+      const tareas = dias[key] || [];
+      const cls = ["pv-cell"];
+      if (key === hoyKey) cls.push("pv-hoy");
+      if (d >= 5) cls.push("pv-weekend");
+      if (tareas.length) cls.push("pv-programado");
+      html += `<div class="${cls.join(" ")}"><span class="pv-dia-num">${dia}</span>`;
+      if (tareas.length) {
+        html += '<span class="pv-tareas">';
+        tareas.forEach((t, j) => {
+          const topF = (mapFallas.get(t.maquina) || [])[0];
+          const rep = pvReporteExiste(t);
+          let title = t.maquina;
+          if (t.maquinaNombre) title += ` · ${t.maquinaNombre}`;
+          if (topF) title += ` · ${topF.cat} (${topF.n})`;
+          if (rep) title += " · con reporte";
+          if (t.estado) title += ` · ${t.estado}`;
+          const style = t.color ? ` style="background-color:${escapeHtml(t.color)}"` : "";
+          html += `<button type="button" class="pv-tarea${t.estado ? " pv-tarea-marcada" : ""}" data-pv="${key}" data-idx="${j}"${style} title="${escapeHtml(title)}">${escapeHtml(t.maquina)}${rep ? '<i class="pv-tarea-rep"></i>' : ""}</button>`;
+        });
+        html += "</span>";
+      }
+      html += "</div>";
+      dia++;
+    }
+    html += "</div>";
+  }
+  el.innerHTML = html;
+}
+
+function renderPvView() {
+  const sel = $("pv-select");
+  if (!pv.list.length) {
+    sel.innerHTML = '<option value="">Sin meses creados</option>';
+    $("pv-grid").innerHTML = "";
+    $("pv-mes-titulo").textContent = "—";
+    $("pv-estado").textContent = "Sin meses";
+    renderPvLegend();
+    return;
+  }
+  if (!pv.activeId || !pv.list.some((c) => c.id === pv.activeId)) {
+    const hoyMes = pvHoyKey().slice(0, 7);
+    pv.activeId = (pv.list.find((c) => c.mes === hoyMes) || pv.list[pv.list.length - 1]).id;
+  }
+  sel.innerHTML = "";
+  for (const c of pv.list) sel.appendChild(new Option(c.name, c.id));
+  sel.value = pv.activeId;
+  const cal = pvActivo();
+  const tareas = Object.values(cal.dias || {}).flat();
+  const hechas = tareas.filter((t) => t.estado === "Realizado").length;
+  $("pv-mes-titulo").textContent = cal.name;
+  $("pv-estado").textContent = tareas.length
+    ? `${tareas.length} máquinas · ${hechas} realizadas`
+    : "Sin programación";
+  renderPvGrid();
+  renderPvLegend();
+}
+
+function pvNav(dir) {
+  const idx = pv.list.findIndex((c) => c.id === pv.activeId);
+  const n = idx + dir;
+  if (idx === -1 || n < 0 || n >= pv.list.length) return;
+  pv.activeId = pv.list[n].id;
+  renderPvView();
+}
+
+async function pvNuevoMes() {
+  const mes = (prompt("Mes a crear (formato YYYY-MM, ej. 2026-11):", "") || "").trim();
+  if (!mes) return;
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return alert("Formato inválido. Usa YYYY-MM.");
+  await pvFetch("/api/preventivo", { method: "POST", body: JSON.stringify({ mes }) });
+  pv.activeId = mes;
+  await recargarPreventivo();
+}
+
+async function pvEliminarMes() {
+  const cal = pvActivo();
+  if (!cal) return;
+  if (!confirm(`¿Eliminar "${cal.name}" con sus estados, reportes y evidencias?`)) return;
+  await pvFetch(`/api/preventivo/${encodeURIComponent(cal.mes)}`, { method: "DELETE" });
+  pv.activeId = null;
+  await recargarPreventivo();
+}
+
+async function pvProgramar() {
+  const cal = pvActivo();
+  if (!cal) return;
+  if (Object.keys(cal.dias || {}).length && !confirm(`¿Regenerar la programación de ${cal.name}?`)) return;
+  await pvFetch(`/api/preventivo/${encodeURIComponent(cal.mes)}/programar`, { method: "POST" });
+  await recargarPreventivo();
+}
+
+async function pvLimpiar() {
+  const cal = pvActivo();
+  if (!cal) return;
+  if (!confirm(`¿Limpiar la agenda de ${cal.name}?`)) return;
+  await pvFetch(`/api/preventivo/${encodeURIComponent(cal.mes)}/limpiar`, { method: "POST" });
+  await recargarPreventivo();
+}
+
+/* --- Modal de la maquina --- */
+
+function renderPvModalFalla(fallas) {
+  const el = $("pv-modal-falla");
+  if (!fallas.length) {
+    el.innerHTML = '<div class="pv-falla-vacio">Sin registros de paros en el periodo usado para ordenar.</div>';
+    return;
+  }
+  const total = fallas.reduce((s, f) => s + f.n, 0);
+  const top = fallas[0];
+  let html = `<div class="pv-falla-top"><span class="pv-falla-label">La falla más común</span><strong>${escapeHtml(top.cat)}</strong><span class="pv-falla-meta">${top.n} paros · ${Math.round((top.n / total) * 100)}% de sus paros en el periodo</span></div>`;
+  if (fallas.length > 1) {
+    html += '<p class="pv-falla-sub">Siguientes más frecuentes:</p><ul class="pv-falla-resto">';
+    for (const f of fallas.slice(1, 4)) html += `<li>${escapeHtml(f.cat)} <span>(${f.n} paros)</span></li>`;
+    html += "</ul>";
+  }
+  el.innerHTML = html;
+}
+
+function renderPvModalEstado(t) {
+  const el = $("pv-modal-estado");
+  el.innerHTML = "";
+  for (const est of ["", ...PV_ESTADOS]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn-ghost" + (est === (t.estado || "") ? " pv-estado-activo" : "");
+    b.textContent = est || "Sin marcar";
+    b.addEventListener("click", () => pvMarcar(t, est).catch((err) => alert(err.message)));
+    el.appendChild(b);
+  }
+}
+
+function renderPvModalReporte(t) {
+  const el = $("pv-modal-reporte");
+  const tiene = pvReporteExiste(t);
+  el.className = "pv-modal-reporte" + (tiene ? " con" : "");
+  el.innerHTML = "";
+  const info = document.createElement("span");
+  info.className = "pv-modal-reporte-aviso";
+  info.textContent = tiene ? "Reporte de seguimiento agregado" : "Aún sin reporte de mantenimiento";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = tiene ? "btn btn-ghost" : "btn";
+  btn.textContent = tiene ? "Ver / editar reporte" : "Agregar reporte";
+  btn.addEventListener("click", abrirPvReporte);
+  el.append(info, btn);
+}
+
+function abrirPvModal(key, idx) {
+  const cal = pvActivo();
+  const t = pvTarea(key, idx);
+  if (!cal || !t) return;
+  pv.modal = { key, idx };
+  const [py, pm] = pvMesAnterior(cal.mes).split("-").map(Number);
+  $("pv-modal-titulo").textContent = `${t.maquina}${t.maquinaNombre ? " · " + t.maquinaNombre : ""}`;
+  $("pv-modal-periodo").textContent = `Preventivo mensual · ${fmtDate(key)} · prioridad según el tiempo muerto de ${PV_MES_NOMBRES[pm - 1]} ${py}`;
+  renderPvModalFalla(pvFallasPorMaquina(pvRowsMesAnterior(cal.mes)).get(t.maquina) || []);
+  renderPvModalEstado(t);
+  renderPvModalReporte(t);
+  $("pv-modal").classList.remove("hidden-modal");
+}
+
+function cerrarPvModal() {
+  $("pv-modal").classList.add("hidden-modal");
+  pv.modal = null;
+}
+
+async function pvMarcar(t, estado) {
+  await pvFetch(`/api/preventivo/tareas/${t.id}/estado`, { method: "PUT", body: JSON.stringify({ estado }) });
+  await recargarPreventivo();
+}
+
+/* --- Reporte de mantenimiento --- */
+
+function pvChecklist(code) {
+  const base = PV_CHECKLIST[tipoDeMaquina(code)] || PV_CHECKLIST.Cortadoras;
+  return base.map((punto) => ({ punto, ok: false }));
+}
+
+function renderPvReportePuntos() {
+  const el = $("pv-reporte-puntos");
+  el.innerHTML = "";
+  pv.borrador.puntos.forEach((p, i) => {
+    const row = document.createElement("div");
+    row.className = "pv-rep-punto" + (p.ok ? " ok" : "");
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!p.ok;
+    cb.addEventListener("change", () => {
+      p.ok = cb.checked;
+      row.classList.toggle("ok", p.ok);
+    });
+    const span = document.createElement("span");
+    span.textContent = p.punto;
+    lab.append(cb, span);
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "pv-rep-rm";
+    rm.textContent = "×";
+    rm.title = "Quitar punto";
+    rm.setAttribute("aria-label", `Quitar "${p.punto}"`);
+    rm.addEventListener("click", () => {
+      pv.borrador.puntos.splice(i, 1);
+      renderPvReportePuntos();
+    });
+    row.append(lab, rm);
+    el.appendChild(row);
+  });
+}
+
+function renderPvReporteEvidencias() {
+  const el = $("pv-reporte-evidencias");
+  el.innerHTML = "";
+  const lista = [...pv.borrador.evidencias, ...pv.borrador.pendientes];
+  if (!lista.length) {
+    el.innerHTML = '<p class="pv-rep-sin-ev">Sin evidencias. Adjunta fotos o el PDF del check list realizado.</p>';
+    return;
+  }
+  for (const ev of lista) {
+    const item = document.createElement("div");
+    item.className = "pv-rep-ev";
+    const nombre = ev.pendiente ? ev.file.name : ev.name;
+    const esPdf = /\.pdf$/i.test(nombre);
+    if (!esPdf) {
+      const img = document.createElement("img");
+      img.src = ev.url;
+      img.alt = "evidencia";
+      if (ev.pendiente) item.appendChild(img);
+      else {
+        const a = document.createElement("a");
+        a.href = ev.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.appendChild(img);
+        item.appendChild(a);
+      }
+    } else if (ev.pendiente) {
+      const s = document.createElement("span");
+      s.className = "pv-rep-pdf";
+      s.textContent = nombre;
+      item.appendChild(s);
+    } else {
+      const a = document.createElement("a");
+      a.href = ev.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.className = "pv-rep-pdf";
+      a.textContent = "PDF";
+      item.appendChild(a);
+    }
+    item.title = ev.pendiente ? `${nombre} (se sube al guardar)` : nombre;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "pv-rep-rm ev";
+    rm.textContent = "×";
+    rm.title = "Quitar evidencia";
+    rm.addEventListener("click", () => {
+      // Se quita del borrador; el servidor borra el archivo al guardar el reporte.
+      if (ev.pendiente) pv.borrador.pendientes = pv.borrador.pendientes.filter((e) => e !== ev);
+      else pv.borrador.evidencias = pv.borrador.evidencias.filter((e) => e !== ev);
+      renderPvReporteEvidencias();
+    });
+    item.appendChild(rm);
+    el.appendChild(item);
+  }
+}
+
+function abrirPvReporte() {
+  if (!pv.modal) return;
+  const t = pvTarea(pv.modal.key, pv.modal.idx);
+  if (!t) return;
+  const r = t.reporte;
+  pv.borrador = {
+    tareaId: t.id,
+    puntos: r ? r.puntos.map((p) => ({ ...p })) : pvChecklist(t.maquina),
+    evidencias: r ? r.evidencias.map((e) => ({ ...e })) : [],
+    pendientes: [],
+  };
+  $("pv-reporte-titulo").textContent = `Reporte de mantenimiento · ${t.maquina}${t.maquinaNombre ? " · " + t.maquinaNombre : ""}`;
+  $("pv-reporte-fecha").textContent = `Fecha agendada: ${new Date(pv.modal.key + "T12:00:00").toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}`;
+  $("pv-reporte-responsable").value = r ? r.responsable : "";
+  $("pv-reporte-observaciones").value = r ? r.observaciones : "";
+  $("pv-reporte-nuevo-punto").value = "";
+  $("pv-tecnicos").innerHTML = (state.technicians || [])
+    .map((tc) => `<option value="${escapeHtml(tc.name || "")}"></option>`)
+    .join("");
+  const autor = $("pv-reporte-autor");
+  autor.hidden = !(r && r.en);
+  if (r && r.en) autor.textContent = `Última actualización: ${fmtDateTime(r.en)}${r.por ? " · " + r.por : ""}`;
+  renderPvReportePuntos();
+  renderPvReporteEvidencias();
+  $("pv-reporte-modal").classList.remove("hidden-modal");
+}
+
+function cerrarPvReporte() {
+  if (pv.borrador) for (const p of pv.borrador.pendientes) if (p.url) URL.revokeObjectURL(p.url);
+  $("pv-reporte-modal").classList.add("hidden-modal");
+  pv.borrador = null;
+}
+
+async function pvSubirEvidencia(file) {
+  const base64 = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(",")[1]);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+  return pvFetch("/api/preventivo/evidencia", { method: "POST", body: JSON.stringify({ base64, name: file.name }) });
+}
+
+async function guardarPvReporte() {
+  const b = pv.borrador;
+  if (!b) return;
+  const btn = $("pv-reporte-guardar");
+  btn.disabled = true;
+  try {
+    while (b.pendientes.length) {
+      const p = b.pendientes[0];
+      const r = await pvSubirEvidencia(p.file);
+      b.evidencias.push({ name: r.name, url: r.url });
+      if (p.url) URL.revokeObjectURL(p.url);
+      b.pendientes.shift();
+    }
+    await pvFetch(`/api/preventivo/tareas/${b.tareaId}/reporte`, {
+      method: "PUT",
+      body: JSON.stringify({
+        responsable: $("pv-reporte-responsable").value.trim(),
+        puntos: b.puntos,
+        observaciones: $("pv-reporte-observaciones").value.trim(),
+        evidencias: b.evidencias.map((e) => ({ name: e.name })),
+      }),
+    });
+    cerrarPvReporte();
+    await recargarPreventivo();
+  } catch (err) {
+    renderPvReporteEvidencias();
+    alert("No se pudo guardar el reporte: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* --- Eventos --- */
+
+const pvAccion = (fn) => () => fn().catch((err) => alert(err.message));
+
+$("pv-select").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  pv.activeId = e.target.value;
+  renderPvView();
+});
+$("pv-anterior").addEventListener("click", () => pvNav(-1));
+$("pv-siguiente").addEventListener("click", () => pvNav(1));
+$("pv-nuevo").addEventListener("click", pvAccion(pvNuevoMes));
+$("pv-eliminar").addEventListener("click", pvAccion(pvEliminarMes));
+$("pv-programar").addEventListener("click", pvAccion(pvProgramar));
+$("pv-limpiar").addEventListener("click", pvAccion(pvLimpiar));
+$("pv-grid").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-idx]");
+  if (chip) abrirPvModal(chip.dataset.pv, chip.dataset.idx);
+});
+
+$("pv-modal-close").addEventListener("click", cerrarPvModal);
+$("pv-modal-cerrar").addEventListener("click", cerrarPvModal);
+$("pv-modal").addEventListener("click", (e) => {
+  if (e.target === $("pv-modal")) cerrarPvModal();
+});
+$("pv-reporte-close").addEventListener("click", cerrarPvReporte);
+$("pv-reporte-cancelar").addEventListener("click", cerrarPvReporte);
+$("pv-reporte-modal").addEventListener("click", (e) => {
+  if (e.target === $("pv-reporte-modal")) cerrarPvReporte();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("pv-reporte-modal").classList.contains("hidden-modal")) cerrarPvReporte();
+  else if (!$("pv-modal").classList.contains("hidden-modal")) cerrarPvModal();
+});
+
+$("pv-reporte-agregar-punto").addEventListener("click", () => {
+  const inp = $("pv-reporte-nuevo-punto");
+  const texto = inp.value.trim();
+  if (!texto || !pv.borrador) return;
+  pv.borrador.puntos.push({ punto: texto, ok: false });
+  inp.value = "";
+  renderPvReportePuntos();
+});
+$("pv-reporte-nuevo-punto").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  $("pv-reporte-agregar-punto").click();
+});
+$("pv-reporte-archivo").addEventListener("change", (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = "";
+  if (!pv.borrador) return;
+  for (const file of files) {
+    if (pv.borrador.evidencias.length + pv.borrador.pendientes.length >= PV_MAX_EVIDENCIAS) {
+      alert(`Máximo ${PV_MAX_EVIDENCIAS} evidencias por reporte.`);
+      break;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      alert(`${file.name}: máximo 5 MB por archivo.`);
+      continue;
+    }
+    const url = /\.pdf$/i.test(file.name) ? "" : URL.createObjectURL(file);
+    pv.borrador.pendientes.push({ file, url, pendiente: true });
+  }
+  renderPvReporteEvidencias();
+});
+$("pv-reporte-guardar").addEventListener("click", () => guardarPvReporte());
+
+// El dia actual se resalta solo cuando cambia la fecha.
+setInterval(() => {
+  if (pvHoyKey() !== pv.hoyKey && !$("view-preventivo").hidden) renderPvGrid();
+}, 60000);
+
 /* ---------------- Inicio ---------------- */
 
 defaultRange();
@@ -4355,6 +4969,7 @@ setInterval(liveTick, LIVE_MS);
 loadContramedidas();
 loadBonos();
 loadCalendarios();
+loadPreventivo();
 loadDocumentos();
 loadGastos();
 loadEntregas();
@@ -4593,7 +5208,7 @@ $("tabla-operadores").addEventListener("click", async (e) => {
 
 const VISTAS_POR_CAPACIDAD = {
   tiempo: "dashboard", mttr: "dashboard", tecnicos: "dashboard", historico: "historico",
-  contramedidas: "escribir", bonos: "escribir", calendarios: "escribir", documentos: "escribir",
+  contramedidas: "escribir", bonos: "escribir", calendarios: "escribir", preventivo: "escribir", documentos: "escribir",
   gastos: "escribir", entregas: "escribir", operadores: "admin", configuracion: "admin",
 };
 

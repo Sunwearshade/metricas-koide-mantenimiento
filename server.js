@@ -22,6 +22,7 @@ const fuenteCm = require("./lib/contramedidasFuente");
 const recomendacionesCm = require("./lib/contramedidasRecomendaciones");
 const programacionCm = require("./lib/contramedidasProgramacion");
 const aprobacionCm = require("./lib/contramedidasAprobacion");
+const preventivo = require("./lib/preventivo");
 
 const ROOT = __dirname;
 const PYTHON = env("PYTHON_PATH", process.platform === "win32" ? "python" : "python3");
@@ -1147,7 +1148,90 @@ async function handleOperadoresAdmin(req, res, url, user) {
   return false;
 }
 
+/* ---------- Programa de mantenimiento preventivo mensual (mig 009) ---------- */
+
+async function handlePreventivo(req, res, url, user) {
+  try {
+    if (url === "/api/preventivo" && req.method === "GET") {
+      await preventivo.asegurarRestoAno();
+      if (cache) {
+        const hechos = await preventivo.autoProgramar(cache.records, cache.machines);
+        if (hechos.length) log(`[prev] Programacion automatica mensual generada: ${hechos.join(", ")}`);
+      }
+      sendJson(res, 200, await preventivo.listar(config));
+      return true;
+    }
+    if (url === "/api/preventivo" && req.method === "POST") {
+      const body = await readBody(req);
+      if (!(await preventivo.crearMes(body.mes, { user }))) throw new preventivo.PreventivoError("El mes ya existe");
+      log(`[prev] Mes creado: ${body.mes}`);
+      sendJson(res, 200, { ok: true, mes: body.mes });
+      return true;
+    }
+    if (url === "/api/preventivo/evidencia" && req.method === "POST") {
+      const body = await readBody(req, 8e6);
+      const r = preventivo.guardarEvidencia(DATA_DIR, body.base64);
+      log(`[prev] Evidencia subida: ${r.name} (${r.size} bytes)`);
+      sendJson(res, 200, { ok: true, name: r.name, url: r.url });
+      return true;
+    }
+    const mEv = url.match(/^\/api\/preventivo\/evidencia\/([^/]+)$/);
+    if (mEv && req.method === "GET") {
+      const ev = preventivo.leerEvidencia(DATA_DIR, decodeURIComponent(mEv[1]));
+      if (!ev) {
+        sendJson(res, 404, { error: "No encontrado" });
+        return true;
+      }
+      res.writeHead(200, { "Content-Type": ev.mime, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400" });
+      res.end(ev.buf);
+      return true;
+    }
+    const mTarea = url.match(/^\/api\/preventivo\/tareas\/(\d+)\/(estado|reporte)$/);
+    if (mTarea && req.method === "PUT") {
+      const id = Number(mTarea[1]);
+      const body = await readBody(req);
+      if (mTarea[2] === "estado") await preventivo.marcarEstado(id, body.estado, { user });
+      else await preventivo.guardarReporte(id, body, { user, dataDir: DATA_DIR });
+      sendJson(res, 200, { ok: true });
+      return true;
+    }
+    const mAccion = url.match(/^\/api\/preventivo\/(\d{4}-\d{2})\/(programar|limpiar)$/);
+    if (mAccion && req.method === "POST") {
+      const mes = mAccion[1];
+      let tareas = [];
+      if (mAccion[2] === "programar") {
+        tareas = preventivo.programarMes(mes, cache ? cache.records : [], cache ? cache.machines : []);
+        if (!tareas.length) {
+          throw new preventivo.PreventivoError(
+            `Sin datos de paros de ${preventivo.nombreMes(preventivo.mesAnterior(mes))}; el mes queda sin programacion.`,
+            409
+          );
+        }
+      }
+      await preventivo.reemplazarAgenda(mes, tareas, { user });
+      log(`[prev] ${mAccion[2] === "programar" ? "Programacion regenerada" : "Agenda limpiada"}: ${mes} (${tareas.length} tareas)`);
+      sendJson(res, 200, { ok: true, tareas: tareas.length });
+      return true;
+    }
+    const mMes = url.match(/^\/api\/preventivo\/(\d{4}-\d{2})$/);
+    if (mMes && req.method === "DELETE") {
+      await preventivo.eliminarMes(mMes[1], { user, dataDir: DATA_DIR });
+      log(`[prev] Mes eliminado: ${mMes[1]}`);
+      sendJson(res, 200, { ok: true });
+      return true;
+    }
+  } catch (err) {
+    if (err instanceof preventivo.PreventivoError) {
+      sendJson(res, err.status, { error: err.message });
+      return true;
+    }
+    throw err;
+  }
+  return false;
+}
+
 async function handleApp(req, res, url, user) {
+  if (url.startsWith("/api/preventivo") && (await handlePreventivo(req, res, url, user))) return;
   if (url.startsWith("/api/admin/") && (await handleOperadoresAdmin(req, res, url, user))) return;
   if (url === "/api/data") {
     if (!cache) await refresh();

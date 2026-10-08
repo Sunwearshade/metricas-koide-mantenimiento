@@ -1138,6 +1138,137 @@ test("calendarios: subir, marcar estatus, eliminar", async () => {
   assert.equal((await api("DELETE", `/api/calendarios/${id}`)).status, 404);
 });
 
+test("programa preventivo: programacion por tiempo muerto del mes anterior (funciones puras)", () => {
+  const pv = require("../lib/preventivo");
+  assert.equal(pv.mesAnterior("2026-01"), "2025-12");
+  assert.equal(pv.nombreMes("2026-10"), "Octubre 2026");
+  const habiles = pv.diasHabiles("2026-10");
+  assert.equal(habiles.length, 27, "octubre 2026: lunes a sabado");
+  assert.ok(!habiles.includes("2026-10-04"), "sin domingos");
+  const rec = (code, min, fecha = "2026-09-10") => ({ record_date: fecha, machine_code: code, downtime_minutes: min });
+  const records = [rec("A", 10), rec("B", 50), rec("B", 5), rec("C", null), rec("Z", 999, "2026-08-01")];
+  const machines = ["A", "B", "C", "D"].map((code) => ({ code, name: `Maq ${code}` }));
+  const t = pv.programarMes("2026-10", records, machines);
+  assert.deepEqual(t.map((x) => x.maquina), ["B", "A", "C", "D"], "mas tiempo muerto primero; sin minutos al final");
+  assert.deepEqual(t.map((x) => x.fecha), ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-05"]);
+  assert.equal(t[0].maquinaNombre, "Maq B");
+  assert.deepEqual(pv.programarMes("2026-12", records, machines), [], "sin paros el mes anterior: sin programacion");
+  // Mas maquinas que dias habiles: se reparten y se numeran dentro del dia.
+  const muchas = Array.from({ length: 30 }, (_, i) => ({ code: `M${i}` }));
+  const t2 = pv.programarMes("2026-10", [rec("M0", 1)], muchas);
+  assert.equal(t2[27].fecha, "2026-10-01");
+  assert.equal(t2[27].orden, 1);
+});
+
+test("programa preventivo: meses, agenda, estado, reporte con evidencias y protecciones", async () => {
+  let r = await api("GET", "/api/preventivo");
+  assert.equal(r.status, 200);
+  await api("POST", "/api/preventivo", { mes: "2026-10" });
+  assert.equal((await api("POST", "/api/preventivo", { mes: "2026-10" })).status, 400, "mes duplicado");
+  assert.equal((await api("POST", "/api/preventivo", { mes: "2026-13" })).status, 400, "mes invalido");
+  r = await api("GET", "/api/preventivo");
+  let oct = r.data.find((c) => c.mes === "2026-10");
+  if (!Object.keys(oct.dias).length) {
+    assert.equal((await api("POST", "/api/preventivo/2026-10/programar")).status, 200);
+    oct = (await api("GET", "/api/preventivo")).data.find((c) => c.mes === "2026-10");
+  }
+  assert.equal(oct.name, "Octubre 2026");
+  const tareas = Object.values(oct.dias).flat();
+  assert.deepEqual(tareas.map((t) => t.maquina).sort(), ["M1", "M2", "M3"], "una tarea por maquina");
+  assert.ok(Object.keys(oct.dias).every((f) => new Date(f + "T12:00:00Z").getUTCDay() !== 0), "nunca en domingo");
+  const t = tareas[0];
+
+  // Sin paros en el mes anterior: no se programa.
+  await api("POST", "/api/preventivo", { mes: "2030-02" });
+  assert.equal((await api("POST", "/api/preventivo/2030-02/programar")).status, 409);
+
+  // Estado
+  assert.equal((await api("PUT", `/api/preventivo/tareas/${t.id}/estado`, { estado: "Hecho" })).status, 400);
+  assert.equal((await api("PUT", `/api/preventivo/tareas/${t.id}/estado`, { estado: "Realizado" })).status, 200);
+  assert.equal((await api("PUT", "/api/preventivo/tareas/999999/estado", { estado: "Realizado" })).status, 404);
+  // Con avance ya no se puede regenerar ni limpiar.
+  assert.equal((await api("POST", "/api/preventivo/2026-10/programar")).status, 409);
+  assert.equal((await api("POST", "/api/preventivo/2026-10/limpiar")).status, 409);
+
+  // Evidencias: se valida el contenido real, no la extension.
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(200)]);
+  assert.equal((await api("POST", "/api/preventivo/evidencia", { name: "x.png", base64: Buffer.alloc(200, 65).toString("base64") })).status, 400);
+  const ev1 = (await api("POST", "/api/preventivo/evidencia", { name: "a.png", base64: png.toString("base64") })).data;
+  const ev2 = (await api("POST", "/api/preventivo/evidencia", { name: "b.png", base64: png.toString("base64") })).data;
+  assert.match(ev1.name, /^ev_.+\.png$/);
+  r = await api("GET", ev1.url);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "image/png");
+  assert.equal((await api("GET", "/api/preventivo/evidencia/..%2F..%2Fconfig.json")).status, 404);
+
+  // Reporte
+  const puntos = [{ punto: "Lubricar puntos de engrase", ok: true }, { punto: "Revisar sensores", ok: false }];
+  r = await api("PUT", `/api/preventivo/tareas/${t.id}/reporte`, {
+    responsable: "PEDRO ENRIQUE ORTIZ", puntos, observaciones: "Sin novedad ñ", evidencias: [{ name: ev1.name }, { name: ev2.name }],
+  });
+  assert.equal(r.status, 200);
+  assert.equal((await api("PUT", `/api/preventivo/tareas/${t.id}/reporte`, { evidencias: [{ name: "../../config.json" }] })).status, 400);
+  assert.equal((await api("PUT", `/api/preventivo/tareas/${t.id}/reporte`, { evidencias: [{ name: "ev_no_existe.png" }] })).status, 400);
+  oct = (await api("GET", "/api/preventivo")).data.find((c) => c.mes === "2026-10");
+  const t1 = Object.values(oct.dias).flat().find((x) => x.id === t.id);
+  assert.equal(t1.estado, "Realizado");
+  assert.equal(t1.color, "#16a34a");
+  assert.equal(t1.reporte.responsable, "PEDRO ENRIQUE ORTIZ");
+  assert.deepEqual(t1.reporte.puntos, puntos);
+  assert.equal(t1.reporte.observaciones, "Sin novedad ñ");
+  assert.equal(t1.reporte.evidencias.length, 2);
+  assert.equal(t1.reporte.por, USUARIOS.admin.username);
+  const dir = path.join(DATA_DIR, "preventivo-evidencias");
+  // Quitar una evidencia del reporte borra el archivo.
+  r = await api("PUT", `/api/preventivo/tareas/${t.id}/reporte`, { responsable: "X", puntos, evidencias: [{ name: ev2.name }] });
+  assert.equal(r.status, 200);
+  assert.ok(!fs.existsSync(path.join(dir, ev1.name)));
+  assert.ok(fs.existsSync(path.join(dir, ev2.name)));
+  assert.ok((await count("auditoria", "WHERE entidad = 'preventivo'")) >= 3);
+
+  // Solo administradores.
+  assert.equal((await api("GET", "/api/preventivo", null, "op")).status, 403);
+  assert.equal((await api("GET", "/api/preventivo", null, null)).status, 401);
+
+  // Eliminar el mes borra tareas y evidencias.
+  assert.equal((await api("DELETE", "/api/preventivo/2026-10")).status, 200);
+  assert.equal(await count("preventivo_tareas", "WHERE mes = '2026-10'"), 0);
+  assert.ok(!fs.existsSync(path.join(dir, ev2.name)));
+  assert.equal((await api("DELETE", "/api/preventivo/2026-10")).status, 404);
+  await api("DELETE", "/api/preventivo/2030-02");
+});
+
+test("programa preventivo: importacion del JSON del sistema metricos", async () => {
+  const src = path.join(TMP, "pv-import");
+  fs.mkdirSync(path.join(src, "ev"), { recursive: true });
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(200)]);
+  fs.writeFileSync(path.join(src, "ev", "ev_abc_1234.png"), png);
+  const cals = [
+    { id: "cal-2031-03", name: "Marzo 2031", mes: "2031-03", dias: {
+      "2031-03-03": [
+        { maquina: "CNC1", maquinaNombre: "Muratec", estado: "Realizado", color: "#16a34a",
+          reporte: { responsable: "R", puntos: [{ punto: "P1", ok: true }], observaciones: "O", evidencias: [{ name: "ev_abc_1234.png", url: "/api/calendarios/evidencia/ev_abc_1234.png" }] } },
+        { maquina: "B8", maquinaNombre: "NPK-250", estado: "", color: "" },
+      ],
+      "2031-04-01": [{ maquina: "FUERA", estado: "" }],
+    } },
+    { id: "excel", name: "viejo.xlsx", sheets: [] },
+  ];
+  fs.writeFileSync(path.join(src, "calendarios.json"), JSON.stringify(cals));
+  const run = () => execFileSync(process.execPath, [path.join(ROOT, "scripts", "importar-preventivo.js"), path.join(src, "calendarios.json"), "--evidencias", path.join(src, "ev")], { env: directEnv(), cwd: TMP }).toString();
+  assert.match(run(), /2031-03: 2 tareas importadas/);
+  assert.match(run(), /ya tiene programacion/, "repetir no duplica");
+  const mar = (await api("GET", "/api/preventivo")).data.find((c) => c.mes === "2031-03");
+  const [cnc, b8] = mar.dias["2031-03-03"];
+  assert.equal(cnc.estado, "Realizado");
+  assert.equal(cnc.reporte.responsable, "R");
+  assert.equal(cnc.reporte.evidencias.length, 1);
+  assert.equal((await api("GET", cnc.reporte.evidencias[0].url)).status, 200);
+  assert.equal(b8.reporte, undefined);
+  assert.equal(Object.keys(mar.dias).length, 1, "las fechas fuera del mes se ignoran");
+  await api("DELETE", "/api/preventivo/2031-03");
+});
+
 test("documentos: listar, subir, descargar, borrar (rutas en MySQL)", async () => {
   let r = await api("GET", "/api/documentos");
   assert.equal(r.data.length, 6);
