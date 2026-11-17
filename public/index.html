@@ -90,6 +90,15 @@
       <div class="view" id="view-tiempo">
         <!-- Paros ABIERTOS en tiempo real (fuente: KOIDE MES). Independiente del
              periodo seleccionado: un paro vivo importa aunque haya empezado ayer. -->
+        <!-- Alertas de supervision (KOIDE MES mig 117): solo las de mantenimiento. -->
+        <section class="panel panel-alertas" id="alertas-panel" hidden>
+          <div class="panel-head">
+            <h2>Alertas de mantenimiento</h2>
+            <span class="badge badge-muted" id="alertas-cuenta">—</span>
+          </div>
+          <ul class="alertas-lista" id="alertas-lista"></ul>
+        </section>
+
         <section class="panel panel-abiertos" id="abiertos-panel" hidden>
           <div class="panel-head">
             <h2>Paros abiertos ahora</h2>
@@ -101,8 +110,9 @@
                 <tr>
                   <th>Máquina</th>
                   <th>Inicio</th>
-                  <th>Transcurrido</th>
+                  <th title="Detenido: la máquina sin producir. Abierto: desde la declaración hasta ahora (el paro sigue abierto aunque la línea ya produzca).">Detenido · abierto</th>
                   <th>Estado</th>
+                  <th>Atención</th>
                   <th>Técnicos · tiempo asignado</th>
                   <th>Respuesta</th>
                   <th>Reparación</th>
@@ -153,6 +163,21 @@
             <span class="kpi-label">Tiempo de respuesta promedio</span>
             <span class="kpi-value" id="kpi-respuesta-prom">—</span>
             <span class="kpi-sub">minutos por paro</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Atendidos en plazo</span>
+            <span class="kpi-value" id="kpi-atencion-pct">—</span>
+            <span class="kpi-sub" id="kpi-atencion-pct-sub">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Paros sin atender</span>
+            <span class="kpi-value" id="kpi-sin-atender">—</span>
+            <span class="kpi-sub" id="kpi-sin-atender-sub">venció el plazo sin atención</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Atenciones tardías</span>
+            <span class="kpi-value" id="kpi-tardias">—</span>
+            <span class="kpi-sub" id="kpi-tardias-sub">atendidos después del plazo</span>
           </div>
           <div class="kpi">
             <span class="kpi-label">Máquina con mayor reparación</span>
@@ -701,6 +726,16 @@
             <span class="kpi-value" id="kpi-tec-cumplimiento">—</span>
             <span class="kpi-sub">% de paros a tiempo</span>
           </div>
+          <div class="kpi">
+            <span class="kpi-label">Atención en plazo</span>
+            <span class="kpi-value" id="kpi-tec-atencion">—</span>
+            <span class="kpi-sub" id="kpi-tec-atencion-sub">todos los paros del periodo</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Sin atender · tardías</span>
+            <span class="kpi-value" id="kpi-tec-incumplidos">—</span>
+            <span class="kpi-sub" id="kpi-tec-incumplidos-sub">incumplimientos del equipo</span>
+          </div>
         </section>
 
         <section class="grid-2">
@@ -768,6 +803,7 @@
                   <th>Reparación</th>
                   <th>Productividad</th>
                   <th>Cumplimiento</th>
+                  <th title="Paros que atendió dentro del plazo de atención. No entra en el índice.">Atención en plazo</th>
                   <th>Índice</th>
                   <th>Clasificación</th>
                 </tr>

@@ -2213,6 +2213,23 @@ code {
 .panel-abiertos .pendiente { color: var(--subtle); font-style: italic; font-size: var(--text-sm); }
 .panel-abiertos .muted { color: var(--subtle); font-size: var(--text-xs); }
 
+/* Ciclo del paro (KOIDE MES mig 117): reanudacion, atencion, detenido vs abierto */
+.panel-abiertos .ciclo-estado { white-space: nowrap; }
+.panel-abiertos .ciclo-estado .muted { display: block; margin-top: 2px; }
+.ciclo-produce {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ok-hover);
+}
+
+/* Alertas de supervision (KOIDE MES mig 117) */
+.panel-alertas { border-left: 3px solid var(--danger); }
+.alertas-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.alertas-lista li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); font-size: var(--text-sm); }
+.alertas-lista .muted { color: var(--subtle); font-size: var(--text-xs); }
+
 /* Técnicos participantes de un paro (KOIDE MES) */
 .part-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .part-list li { white-space: nowrap; font-size: 0.85em; }

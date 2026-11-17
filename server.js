@@ -1230,7 +1230,32 @@ async function handlePreventivo(req, res, url, user) {
   return false;
 }
 
+// (MES mig 117) Ciclo de paros: alertas de supervision y umbral de atencion.
+// Solo lectura y TOLERANTE: sin MES configurado o con un MES anterior a la 117
+// (404) responde { disponible: false } y el dashboard simplemente no las pinta.
+const ESTADOS_ALERTA = new Set(["activa", "resuelta", "todas"]);
+async function handleCicloMes(req, res, url) {
+  if (url !== "/api/mes/alertas" && url !== "/api/mes/atencion-umbrales") return false;
+  if (req.method !== "GET") return sendJson(res, 405, { error: "Solo lectura" }), true;
+  if (!koideGeneral.configurado()) return sendJson(res, 200, { disponible: false, code: "MES_NO_CONFIGURADO" }), true;
+  try {
+    if (url === "/api/mes/alertas") {
+      const pedido = new URL(req.url, "http://x").searchParams.get("estado") || "activa";
+      const estado = ESTADOS_ALERTA.has(pedido) ? pedido : "activa";
+      return sendJson(res, 200, await koideGeneral.alertas(estado)), true;
+    }
+    return sendJson(res, 200, await koideGeneral.umbralesAtencion()), true;
+  } catch (err) {
+    if (err instanceof koideGeneral.KoideGeneralError) {
+      if (err.status === 404) return sendJson(res, 200, { disponible: false, code: "MES_SIN_CICLO_PAROS" }), true;
+      return sendJson(res, err.status, { error: err.message, code: err.code }), true;
+    }
+    throw err;
+  }
+}
+
 async function handleApp(req, res, url, user) {
+  if (url.startsWith("/api/mes/") && (await handleCicloMes(req, res, url))) return;
   if (url.startsWith("/api/preventivo") && (await handlePreventivo(req, res, url, user))) return;
   if (url.startsWith("/api/admin/") && (await handleOperadoresAdmin(req, res, url, user))) return;
   if (url === "/api/data") {
@@ -1307,7 +1332,8 @@ const server = http.createServer(async (req, res) => {
     // AUTORIZACION POR ROL (en el backend; la interfaz solo refleja):
     //   mantenimiento_admin  todo
     //   mantenimiento_op     solo /api/operador/* (atencion de paros)
-    //   tecnico_consulta     SOLO LECTURA: /api/data, /api/refresh, /api/historico/*
+    //   tecnico_consulta     SOLO LECTURA: /api/data, /api/refresh, /api/historico/*,
+    //                        /api/mes/alertas, /api/mes/atencion-umbrales
     //                        (desempeno, tiempo muerto, MTTR/MTBF, historico).
     //                        Ninguna escritura, ninguna accion de tecnico.
     if (isApi) {
@@ -1321,7 +1347,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 404, { error: "No encontrado" });
       }
       if (user.rol === CONSULTA) {
-        if (req.method === "GET" && (url === "/api/data" || url === "/api/refresh")) return await handleApp(req, res, url, user);
+        if (req.method === "GET" && (url === "/api/data" || url === "/api/refresh" || url === "/api/mes/alertas" || url === "/api/mes/atencion-umbrales")) return await handleApp(req, res, url, user);
         return sendJson(res, 403, { error: "Sin permiso: tu usuario es de solo consulta" });
       }
       // Todo lo demas es el dashboard administrativo (funcionalidad existente).

@@ -326,6 +326,7 @@ async function loadData(quiet = false) {
     populateTipos();
     populateMonths();
     renderAll();
+    loadAlertas();
   } catch (err) {
     if (!quiet) {
       setHeaderStatus("Error al cargar datos", true);
@@ -1013,6 +1014,28 @@ function renderActiveFilters() {
   }
 }
 
+// (KOIDE MES mig 117) Cumplimiento del plazo de atencion SIN sesgo de
+// supervivencia: un paro que nunca se atendio cuenta como incumplido
+// (sin_atender), igual que uno atendido tarde; solo los "en_curso" (sin
+// atencion y aun dentro del plazo) quedan fuera del denominador. Los registros
+// sin attention_status (historico importado) se cuentan aparte como "sin dato".
+function resumenAtencion(rows) {
+  const o = { enPlazo: 0, tardias: 0, sinAtender: 0, sinAtenderAbiertos: 0, enCurso: 0, sinDato: 0 };
+  for (const r of rows) {
+    const st = r.attention_status;
+    if (st === "en_plazo") o.enPlazo += 1;
+    else if (st === "tardia") o.tardias += 1;
+    else if (st === "sin_atender") {
+      o.sinAtender += 1;
+      if (r.status && r.status !== "Finalizado") o.sinAtenderAbiertos += 1;
+    } else if (st === "en_curso") o.enCurso += 1;
+    else o.sinDato += 1;
+  }
+  o.evaluables = o.enPlazo + o.tardias + o.sinAtender;
+  o.pct = o.evaluables ? (o.enPlazo / o.evaluables) * 100 : null;
+  return o;
+}
+
 function renderKpis(rows, byMachine) {
   const total = byMachine.reduce((s, m) => s + m.minutos, 0);
   const totalRep = byMachine.reduce((s, m) => s + (m.reparacionMin || 0), 0);
@@ -1039,6 +1062,17 @@ function renderKpis(rows, byMachine) {
   $("kpi-respuesta-total").textContent = respTotal ? fmtHours(respTotal) : "0 min";
   $("kpi-respuesta-total-sub").textContent = `${fmtNum(respTotal)} minutos en el periodo`;
   $("kpi-respuesta-prom").textContent = respProm ? Math.round(respProm).toLocaleString("es-MX") : "—";
+  const at = resumenAtencion(rows);
+  $("kpi-atencion-pct").textContent = at.pct != null ? `${at.pct.toFixed(0)}%` : "—";
+  $("kpi-atencion-pct-sub").textContent = at.evaluables
+    ? `${fmtNum(at.enPlazo)} de ${fmtNum(at.evaluables)} evaluables${at.enCurso ? ` · ${fmtNum(at.enCurso)} en curso` : ""}`
+    : at.enCurso ? `${fmtNum(at.enCurso)} en curso, ninguno evaluable` : "sin datos de atención";
+  $("kpi-sin-atender").textContent = fmtNum(at.sinAtender);
+  $("kpi-sin-atender-sub").textContent = at.sinAtender
+    ? `venció el plazo sin atención${at.sinAtenderAbiertos ? ` · ${fmtNum(at.sinAtenderAbiertos)} siguen abiertos` : ""}`
+    : "venció el plazo sin atención";
+  $("kpi-tardias").textContent = fmtNum(at.tardias);
+  $("kpi-tardias-sub").textContent = at.sinDato ? `atendidos después del plazo · ${fmtNum(at.sinDato)} paros sin dato` : "atendidos después del plazo";
   $("kpi-maquina").textContent = top ? `${top.code} · ${top.name}` : "—";
   $("kpi-maquina-sub").textContent = top ? `${fmtNum(top.reparacionMin || 0)} minutos` : "Sin registros";
 }
@@ -1461,6 +1495,109 @@ function participantesHtml(r, minutosVivo) {
   }).join("")}</ul>`;
 }
 
+// (KOIDE MES mig 117) ALERTAS DE SUPERVISION, solo las de mantenimiento (las
+// de otros departamentos o del herramental del operador no se atienden aqui).
+// Un MES sin la 117 responde { disponible: false }: el panel no aparece.
+const TEXTO_ALERTA = {
+  mtto_produciendo: "La línea ya produce con el mantenimiento abierto",
+  paro_sin_atender: "Paro sin atender",
+  atencion_tardia: "Atención tardía",
+  produccion_paro_atencion: "Produce con un paro sin liberar",
+  herramental_produciendo: "Produce con el cambio de herramental abierto",
+};
+const TEXTO_ACCION_ALERTA = {
+  cerrar_mantenimiento: "cerrar el mantenimiento",
+  atender_paro: "atender el paro",
+  revisar_retraso: "revisar el retraso",
+  liberar_paro: "liberar el paro",
+  finalizar_herramental: "finalizar el herramental",
+};
+const CLASE_SEVERIDAD = { critica: "open", warn: "warn", info: "info" };
+// "2026-11-16 08:05:00" (hora de planta) -> "16/11 08:05"
+const fmtPared = (s) => (s ? `${String(s).slice(8, 10)}/${String(s).slice(5, 7)} ${String(s).slice(11, 16)}` : "—");
+let cargandoAlertas = false;
+async function loadAlertas() {
+  if (cargandoAlertas) return;
+  cargandoAlertas = true;
+  try {
+    const res = await fetch("/api/mes/alertas?estado=activa");
+    const data = res.ok ? await res.json() : null;
+    state.alertas = data && data.disponible && Array.isArray(data.alertas)
+      ? data.alertas.filter((a) => a.estado === "activa" && (a.ref_tipo === "mtto_paro" || a.departamento_codigo === "mantenimiento"))
+      : [];
+  } catch {
+    /* sin red: se conserva lo ultimo conocido */
+  } finally {
+    cargandoAlertas = false;
+  }
+  renderAlertas();
+}
+function renderAlertas() {
+  const panel = $("alertas-panel");
+  if (!panel) return;
+  const lista = (state.alertas || []).slice().sort((a, b) => (a.severidad === "critica" ? 0 : 1) - (b.severidad === "critica" ? 0 : 1) || String(a.generada_en).localeCompare(String(b.generada_en)));
+  panel.hidden = lista.length === 0;
+  const crit = lista.filter((a) => a.severidad === "critica").length;
+  $("alertas-cuenta").textContent = `${fmtNum(lista.length)} ${lista.length === 1 ? "activa" : "activas"}${crit ? ` · ${fmtNum(crit)} críticas` : ""}`;
+  $("alertas-lista").innerHTML = lista
+    .map((a) => `<li>
+      <span class="badge-status ${CLASE_SEVERIDAD[a.severidad] || "info"}">${escapeHtml(TEXTO_ALERTA[a.tipo] || a.tipo)}</span>
+      <strong>${escapeHtml(a.maquina_nombre || a.id_maquina || "—")}</strong>${a.categoria ? ` · ${escapeHtml(a.categoria)}` : ""}
+      <span class="muted">desde ${escapeHtml(fmtPared(a.generada_en))}${a.minutos != null ? ` · ${escapeHtml(fmtHours(a.minutos))}` : ""}${a.accion ? ` · falta ${escapeHtml(TEXTO_ACCION_ALERTA[a.accion] || a.accion)}` : ""}</span>
+    </li>`)
+    .join("");
+}
+
+// (KOIDE MES mig 117) CICLO DEL PARO. Solo en los paros nacidos en el MES:
+//   resumed_at            la linea volvio a producir (el paro sigue abierto
+//                         hasta que mantenimiento lo cierre)
+//   stopped_minutes       tiempo DETENIDO (suma de intervalos de inactividad)
+//   administrative_minutes tiempo ABIERTO (declaracion -> cierre o ahora)
+//   attention_status      en_curso | en_plazo | tardia | sin_atender contra el
+//                         umbral de atencion del MES
+// Los registros historicos no traen estos campos: se muestran como antes.
+const numOrNull = (v) => (v == null || v === "" || isNaN(v) ? null : Number(v));
+// Minutos desde la ultima lectura del MES (para que los relojes avancen).
+function minDesdeLectura() {
+  const t = state.updatedAt ? new Date(state.updatedAt).getTime() : NaN;
+  return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 60000) : 0;
+}
+function tiemposCiclo(r) {
+  const det = numOrNull(r.stopped_minutes);
+  const adm = numOrNull(r.administrative_minutes);
+  if (det == null && adm == null) return null;
+  const d = minDesdeLectura();
+  const vivo = r.status && r.status !== "Finalizado";
+  return {
+    detenido: det == null ? null : det + (r.stopped_in_progress ? d : 0),
+    abierto: adm == null ? null : adm + (vivo ? d : 0),
+  };
+}
+// Estado de atencion para mostrar. Un "en_curso" cuyo plazo ya paso desde la
+// ultima lectura se muestra vencido (el MES lo confirmara en la siguiente).
+function atencionDe(r) {
+  const st = r.attention_status;
+  if (!st) return null;
+  const umbral = numOrNull(r.attention_threshold_minutes);
+  const hasta = numOrNull(r.time_to_attention_minutes);
+  const sinAt = numOrNull(r.unattended_minutes);
+  const due = r.attention_due_at ? new Date(r.attention_due_at).getTime() : NaN;
+  const vivo = r.status && r.status !== "Finalizado";
+  if (st === "en_curso") {
+    const resta = Number.isFinite(due) ? Math.round((due - Date.now()) / 60000) : null;
+    if (resta != null && resta <= 0) return { cls: "open", texto: "Sin atender", sub: `venció el plazo de ${umbral ?? "—"} min` };
+    return { cls: "info", texto: resta != null ? `Vence en ${fmtHours(resta)}` : "En plazo", sub: umbral != null ? `plazo ${umbral} min` : "" };
+  }
+  if (st === "en_plazo") return { cls: "ok", texto: "En plazo", sub: hasta != null ? `atendido a los ${fmtHours(hasta)}` : "" };
+  if (st === "tardia") return { cls: "warn", texto: "Atención tardía", sub: hasta != null ? `atendido a los ${fmtHours(hasta)}${umbral != null ? ` · plazo ${umbral} min` : ""}` : "" };
+  if (st === "sin_atender") {
+    const m = sinAt == null ? null : sinAt + (vivo ? minDesdeLectura() : 0);
+    return { cls: "open", texto: "Sin atender", sub: m != null ? `${fmtHours(m)} sin atención${umbral != null ? ` · plazo ${umbral} min` : ""}` : "" };
+  }
+  return null;
+}
+const lineaProduce = (r) => Boolean(r.resumed_pending_close || (r.resumed_at && r.status && r.status !== "Finalizado"));
+
 function renderAbiertos() {
   const panel = $("abiertos-panel");
   if (!panel) return;
@@ -1476,11 +1613,21 @@ function renderAbiertos() {
       const ini = r.downtime_start ? new Date(r.downtime_start).getTime() : NaN;
       const trans = Number.isFinite(ini) ? Math.max(0, Math.round((ahora - ini) / 60000)) : null;
       const tecTxt = participantesHtml(r, trans) || pendiente;
+      const t = tiemposCiclo(r);
+      const tiempoTxt = t
+        ? `${t.detenido != null ? fmtHours(t.detenido) : "—"} <span class="muted">detenido</span><br>${fmtHours(t.abierto ?? trans)} <span class="muted">abierto</span>`
+        : trans != null ? fmtHours(trans) : "—";
+      const produce = lineaProduce(r)
+        ? `<span class="ciclo-produce" title="La máquina volvió a producir; el paro sigue abierto hasta que Mantenimiento lo cierre.">La línea ya produce · pendiente de cierre</span><span class="muted">desde ${fmtDateTime(r.resumed_at)}${numOrNull(r.downtime_intervals) > 1 ? ` · ${r.downtime_intervals} intervalos` : ""}</span>`
+        : "";
+      const at = atencionDe(r);
+      const atTxt = at ? `<span class="badge-status ${at.cls}">${escapeHtml(at.texto)}</span>${at.sub ? `<span class="muted">${escapeHtml(at.sub)}</span>` : ""}` : pendiente;
       return `<tr>
         <td><strong>${escapeHtml(r.machine_code || "?")}</strong> · ${escapeHtml(r.machine_name || "")}</td>
         <td>${fmtDateTime(r.downtime_start)}</td>
-        <td class="num">${trans != null ? fmtHours(trans) : "—"}</td>
-        <td><span class="badge-status ${claseStatus(r.status)}">${escapeHtml(r.status)}</span></td>
+        <td class="num">${tiempoTxt}</td>
+        <td class="ciclo-estado"><span class="badge-status ${claseStatus(r.status)}">${escapeHtml(r.status)}</span>${produce}</td>
+        <td class="ciclo-estado">${atTxt}</td>
         <td>${tecTxt}</td>
         <td class="num">${r.response_time_minutes != null ? `${fmtNum(r.response_time_minutes)} min` : pendiente}</td>
         <td class="num">${r.repair_time_minutes != null ? `${fmtNum(r.repair_time_minutes)} min` : pendiente}</td>
@@ -1501,7 +1648,9 @@ function firmaRegistros(recs) {
   for (const r of recs) h = (h * 31 + String(r.id).length + String(r.status || "").length + String(r.updated_at || "").length + String(r.repair_time_minutes ?? "").length) >>> 0;
   // participants_employee_numbers: tomar continuidad no cambia estado ni
   // updated_at del paro, pero SI debe repintar a los tecnicos.
-  return `${recs.length}:${h}:${recs.map((r) => `${r.id}:${r.status}:${r.updated_at}:${r.participants_employee_numbers || ""}`).slice(0, 50).join(",")}`;
+  // resumed_at / attention_status (mig 117): la reanudacion y el vencimiento
+  // del plazo de atencion no cambian el estado del paro, pero SI se pintan.
+  return `${recs.length}:${h}:${recs.map((r) => `${r.id}:${r.status}:${r.updated_at}:${r.participants_employee_numbers || ""}:${r.resumed_at || ""}:${r.attention_status || ""}`).slice(0, 50).join(",")}`;
 }
 async function liveTick() {
   if (document.hidden) return;
@@ -1511,6 +1660,7 @@ async function liveTick() {
     const res = await fetch("/api/data");
     if (!res.ok) return;
     const data = await res.json();
+    if (vista === "tiempo") loadAlertas();
     const firma = firmaRegistros(data.records || []);
     if (firma === liveFirma) {
       renderAbiertos(); // solo avanza el "transcurrido"
@@ -2236,6 +2386,11 @@ function computeTecnicos(rows, soloRoster = true) {
     t.cumplimiento = repBase ? (cumpl / repBase) * 100 : null;
     t.scoreCumplimiento = t.cumplimiento;
 
+    // Atencion en plazo (mig 117): solo informativa, NO entra en el indice.
+    // Un paro que nadie atendio no tiene tecnico; ese incumplimiento se ve en
+    // el agregado del equipo (globals.atencion), no aqui.
+    t.atencion = resumenAtencion(t.parosList.map((x) => x.r));
+
     t.reinc = { 7: 0, 15: 0, 30: 0 };
     for (const rec of base) {
       for (const d of PERF.reincidenciaDias) {
@@ -2278,6 +2433,8 @@ function computeTecnicos(rows, soloRoster = true) {
     globalReparacion: medianOf(globalRep),
     globalCumplimiento: gCumpBase ? (gCump / gCumpBase) * 100 : null,
     globalIndice: indices.length ? indices.reduce((s, v) => s + v, 0) / indices.length : null,
+    // Todos los paros del periodo, tambien los que ningun tecnico atendio.
+    atencion: resumenAtencion(rows),
   };
   lastTecGlobals = globals;
   return globals;
@@ -2593,12 +2750,19 @@ function renderTecnicos(rows, includeCharts) {
     globalReparacion != null ? `${globalReparacion.toFixed(0)} min` : "—";
   $("kpi-tec-cumplimiento").textContent =
     globalCumplimiento != null ? `${globalCumplimiento.toFixed(0)}%` : "—";
+  const atEq = calc.atencion;
+  $("kpi-tec-atencion").textContent = atEq.pct != null ? `${atEq.pct.toFixed(0)}%` : "—";
+  $("kpi-tec-atencion-sub").textContent = atEq.evaluables
+    ? `${fmtNum(atEq.enPlazo)} de ${fmtNum(atEq.evaluables)} paros del periodo`
+    : "sin datos de atención";
+  $("kpi-tec-incumplidos").textContent = `${fmtNum(atEq.sinAtender)} · ${fmtNum(atEq.tardias)}`;
+  $("kpi-tec-incumplidos-sub").textContent = `${fmtNum(atEq.sinAtender)} sin atender · ${fmtNum(atEq.tardias)} tardías`;
 
   const tbody = $("tabla-tecnicos").querySelector("tbody");
   $("tecnico-cuenta").textContent = `${list.length} técnicos en el periodo`;
   tbody.innerHTML = "";
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="panel-hint">Sin datos en el periodo.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="panel-hint">Sin datos en el periodo.</td></tr>';
   } else {
     for (const t of list) {
       const c = clasifica(t.indice);
@@ -2612,6 +2776,7 @@ function renderTecnicos(rows, includeCharts) {
         <td>${scoreCell(t.scoreReparacion, t.medianaReparacion != null ? `mediana ${t.medianaReparacion.toFixed(1)} min` : "sin datos")}</td>
         <td>${scoreCell(t.scoreProductividad, `${t.ptsHora ? t.ptsHora.toFixed(2) : "0.00"} pts/h`)}</td>
         <td>${scoreCell(t.scoreCumplimiento, `${t.cumplimiento != null ? t.cumplimiento.toFixed(0) : "—"}% a tiempo`)}</td>
+        <td>${scoreCell(t.atencion.pct, t.atencion.evaluables ? `${t.atencion.enPlazo}/${t.atencion.evaluables}${t.atencion.tardias ? ` · ${t.atencion.tardias} tardías` : ""}` : "sin datos")}</td>
         <td class="num"><span class="cell-indice">${t.indice != null ? t.indice.toFixed(1) : "—"}</span></td>
         <td><span class="badge-status ${c.cls}">${c.label}</span></td>`;
       tbody.appendChild(tr);
